@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from database import get_db, get_vn_now, VN_TZ
+from config import settings
 
 def to_vn_dt(dt):
     """Chuyển đổi datetime về múi giờ Việt Nam (UTC+7) chuẩn xác."""
@@ -39,8 +40,22 @@ class ReportService:
             "event": {"$in": ["offline", "video_loss"]}
         })
         events = await events_cursor.to_list(2000)
-
         now_vn = get_vn_now()
+
+        # Bỏ qua các sự cố gián đoạn quá ngắn dưới ngưỡng (ví dụ < 5 phút)
+        min_sec = getattr(settings, "min_incident_seconds", 300)
+        valid_events = []
+        for e in events:
+            dur = e.get("duration_seconds")
+            if dur is not None:
+                if dur >= min_sec:
+                    valid_events.append(e)
+            else:
+                ev_time = to_vn_dt(e.get("timestamp")) or start_vn
+                ongoing_sec = max(0, int((now_vn - ev_time).total_seconds()))
+                if ongoing_sec >= min_sec:
+                    valid_events.append(e)
+        events = valid_events
 
         # Thống kê cho từng đầu thu
         device_reports = []
@@ -344,6 +359,22 @@ class ReportService:
             "event": {"$in": ["offline", "video_loss"]}
         }).sort("timestamp", 1)
         events = await events_cursor.to_list(2000)
+        now_vn = get_vn_now()
+
+        # Bỏ qua sự cố gián đoạn ngắn dưới ngưỡng
+        min_sec = getattr(settings, "min_incident_seconds", 300)
+        valid_events = []
+        for e in events:
+            dur = e.get("duration_seconds")
+            if dur is not None:
+                if dur >= min_sec:
+                    valid_events.append(e)
+            else:
+                ev_time = to_vn_dt(e.get("timestamp")) or start_month
+                ongoing_sec = max(0, int((now_vn - ev_time).total_seconds()))
+                if ongoing_sec >= min_sec:
+                    valid_events.append(e)
+        events = valid_events
 
         wb = openpyxl.Workbook()
         ws = wb.active

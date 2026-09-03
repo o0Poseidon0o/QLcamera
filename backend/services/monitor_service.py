@@ -3,6 +3,7 @@ from datetime import datetime, timezone, timedelta
 import logging
 from typing import Optional
 from database import get_db, get_vn_now, VN_TZ
+from config import settings
 from services.dahua_service import DahuaService
 from services.email_service import EmailService
 
@@ -70,7 +71,6 @@ class MonitorService:
                 # 1. Xử lý sự kiện Đầu thu thay đổi trạng thái
                 if prev_status != new_nvr_status:
                     if new_nvr_status == "offline":
-                        # Ghi nhận sự cố đầu thu mất tín hiệu
                         note = f"Đầu thu {dev_name} ({ip}) mất kết nối/mất nguồn."
                         await db.events.insert_one({
                             "target_type": "device",
@@ -82,18 +82,12 @@ class MonitorService:
                             "timestamp": now,
                             "resolved_at": None,
                             "duration_seconds": None,
+                            "alert_sent": False,
                             "note": note
                         })
-                        logger.warning(f"ALERT: Device {dev_name} ({ip}) went OFFLINE!")
-
-                        # Gửi email cảnh báo
-                        now_str = now.strftime("%H:%M:%S ngày %d/%m/%Y")
-                        html = EmailService.build_incident_html(dev_name, dev_name, "offline", now_str, note)
-                        asyncio.create_task(EmailService.send_alert(f"🚨 [CẢNH BÁO] Đầu thu {dev_name} ({ip}) MẤT KẾT NỐI", html))
+                        logger.warning(f"Device {dev_name} ({ip}) went OFFLINE. Monitoring threshold ({settings.min_incident_seconds}s)...")
 
                     elif new_nvr_status == "online" and prev_status == "offline":
-                        # Đầu thu phục hồi -> Đóng sự cố cũ
-                        dur = 0
                         open_event = await db.events.find_one({
                             "target_type": "device",
                             "target_id": str(dev_id),
@@ -104,31 +98,42 @@ class MonitorService:
                         if open_event:
                             ev_time = to_aware_vn(open_event.get("timestamp")) or now
                             dur = max(0, int((now - ev_time).total_seconds()))
-                            await db.events.update_one(
-                                {"_id": open_event["_id"]},
-                                {"$set": {"resolved_at": now, "duration_seconds": dur}}
-                            )
 
-                        # Ghi log phục hồi
-                        note = f"Đầu thu {dev_name} ({ip}) đã kết nối trở lại sau {round(dur/60, 1)} phút."
-                        await db.events.insert_one({
+                            if dur < settings.min_incident_seconds:
+                                # Gián đoạn quá ngắn, chưa đủ cấu thành sự cố -> Xóa bỏ khỏi nhật ký
+                                logger.info(f"Đầu thu {dev_name} gián đoạn quá ngắn ({round(dur/60, 1)}p < {round(settings.min_incident_seconds/60, 1)}p). Bỏ qua không tính sự cố.")
+                                await db.events.delete_one({"_id": open_event["_id"]})
+                            else:
+                                # Sự cố thực sự (>= 5 phút): Cập nhật thời điểm kết thúc
+                                await db.events.update_one(
+                                    {"_id": open_event["_id"]},
+                                    {"$set": {"resolved_at": now, "duration_seconds": dur}}
+                                )
+                                logger.info(f"RESOLVED: Device {dev_name} ({ip}) back ONLINE after {round(dur/60, 1)} min.")
+                                if open_event.get("alert_sent"):
+                                    now_str = now.strftime("%H:%M:%S ngày %d/%m/%Y")
+                                    note = f"Đầu thu {dev_name} ({ip}) đã kết nối trở lại sau {round(dur/60, 1)} phút."
+                                    html = EmailService.build_incident_html(dev_name, dev_name, "online", now_str, note)
+                                    asyncio.create_task(EmailService.send_alert(f"✅ [PHỤC HỒI] Đầu thu {dev_name} ({ip}) ĐÃ KẾT NỐI LẠI", html))
+                else:
+                    # Kiểm tra nếu đang mất kết nối kéo dài vượt ngưỡng thì gửi email cảnh báo
+                    if new_nvr_status == "offline":
+                        open_event = await db.events.find_one({
                             "target_type": "device",
                             "target_id": str(dev_id),
-                            "target_name": dev_name,
-                            "device_id": str(dev_id),
-                            "device_name": dev_name,
-                            "event": "online",
-                            "timestamp": now,
-                            "resolved_at": now,
-                            "duration_seconds": 0,
-                            "note": note
-                        })
-                        logger.info(f"RESOLVED: Device {dev_name} ({ip}) is back ONLINE.")
-
-                        # Gửi email thông báo phục hồi
-                        now_str = now.strftime("%H:%M:%S ngày %d/%m/%Y")
-                        html = EmailService.build_incident_html(dev_name, dev_name, "online", now_str, note)
-                        asyncio.create_task(EmailService.send_alert(f"✅ [PHỤC HỒI] Đầu thu {dev_name} ({ip}) ĐÃ KẾT NỐI LẠI", html))
+                            "event": "offline",
+                            "resolved_at": None,
+                            "alert_sent": {"$ne": True}
+                        }, sort=[("timestamp", -1)])
+                        if open_event:
+                            ev_time = to_aware_vn(open_event.get("timestamp")) or now
+                            dur = max(0, int((now - ev_time).total_seconds()))
+                            if dur >= settings.min_incident_seconds:
+                                await db.events.update_one({"_id": open_event["_id"]}, {"$set": {"alert_sent": True}})
+                                now_str = ev_time.strftime("%H:%M:%S ngày %d/%m/%Y")
+                                note = f"Đầu thu {dev_name} ({ip}) mất kết nối/mất nguồn liên tục hơn {round(dur/60, 1)} phút."
+                                html = EmailService.build_incident_html(dev_name, dev_name, "offline", now_str, note)
+                                asyncio.create_task(EmailService.send_alert(f"🚨 [CẢNH BÁO] Đầu thu {dev_name} ({ip}) MẤT KẾT NỐI", html))
 
                 # Cập nhật thông tin đầu thu
                 update_fields = {
@@ -177,9 +182,8 @@ class MonitorService:
                             if prev_ch_status != new_ch_status:
                                 ch_name = ch_info.get("name", f"Camera {ch_num}")
                                 
-                                # Chỉ cảnh báo Video Loss khi kênh đó là kênh đang dùng mà bị rớt tín hiệu
+                                # Chỉ ghi nhận Video Loss khi kênh đó là kênh đang dùng mà bị rớt tín hiệu
                                 if new_ch_status == "video_loss" and prev_ch_status == "online":
-                                    # Mất tín hiệu camera
                                     note = f"Camera {ch_name} (Kênh {ch_num}) bị mất tín hiệu hình ảnh (Video Loss)."
                                     await db.events.insert_one({
                                         "target_type": "channel",
@@ -192,17 +196,12 @@ class MonitorService:
                                         "timestamp": now,
                                         "resolved_at": None,
                                         "duration_seconds": None,
+                                        "alert_sent": False,
                                         "note": note
                                     })
-                                    logger.warning(f"ALERT: Camera {ch_name} (Ch {ch_num}) on {dev_name} VIDEO LOSS!")
-
-                                    # Gửi email cảnh báo
-                                    now_str = now.strftime("%H:%M:%S ngày %d/%m/%Y")
-                                    html = EmailService.build_incident_html(dev_name, f"{ch_name} (Kênh {ch_num})", "video_loss", now_str, note)
-                                    asyncio.create_task(EmailService.send_alert(f"🚨 [CẢNH BÁO] Camera {ch_name} ({dev_name}) MẤT TÍN HIỆU", html))
+                                    logger.warning(f"Camera {ch_name} (Ch {ch_num}) on {dev_name} VIDEO LOSS. Monitoring threshold ({settings.min_incident_seconds}s)...")
 
                                 elif new_ch_status == "online":
-                                    # Kiểm tra xem có sự cố video_loss cũ nào chưa đóng cho kênh này không
                                     open_ch_event = await db.events.find_one({
                                         "target_type": "channel",
                                         "$or": [
@@ -216,31 +215,45 @@ class MonitorService:
                                     if open_ch_event:
                                         ev_time = to_aware_vn(open_ch_event.get("timestamp")) or now
                                         dur = max(0, int((now - ev_time).total_seconds()))
-                                        await db.events.update_one(
-                                            {"_id": open_ch_event["_id"]},
-                                            {"$set": {"resolved_at": now, "duration_seconds": dur}}
-                                        )
 
-                                        note = f"Camera {ch_name} (Kênh {ch_num}) đã có tín hiệu hình ảnh trở lại sau {round(dur/60, 1)} phút."
-                                        await db.events.insert_one({
-                                            "target_type": "channel",
-                                            "target_id": str(ch_info["_id"]),
-                                            "target_name": f"{dev_name} - {ch_name} (Kênh {ch_num})",
-                                            "device_id": str(dev_id),
-                                            "device_name": dev_name,
-                                            "channel_no": ch_num,
-                                            "event": "recovered",
-                                            "timestamp": now,
-                                            "resolved_at": now,
-                                            "duration_seconds": 0,
-                                            "note": note
-                                        })
-                                        logger.info(f"RESOLVED: Camera {ch_name} (Ch {ch_num}) on {dev_name} RECOVERED.")
-
-                                        # Gửi email thông báo phục hồi
-                                        now_str = now.strftime("%H:%M:%S ngày %d/%m/%Y")
-                                        html = EmailService.build_incident_html(dev_name, f"{ch_name} (Kênh {ch_num})", "recovered", now_str, note)
-                                        asyncio.create_task(EmailService.send_alert(f"✅ [PHỤC HỒI] Camera {ch_name} ({dev_name}) ĐÃ CÓ TÍN HIỆU LẠI", html))
+                                        if dur < settings.min_incident_seconds:
+                                            # Gián đoạn quá ngắn (< 5 phút), chưa thành sự cố -> Xóa bỏ khỏi nhật ký
+                                            logger.info(f"Tín hiệu camera {ch_name} gián đoạn quá ngắn ({round(dur/60, 1)}p < {round(settings.min_incident_seconds/60, 1)}p). Bỏ qua không tính sự cố.")
+                                            await db.events.delete_one({"_id": open_ch_event["_id"]})
+                                        else:
+                                            # Sự cố thực sự (>= 5 phút): Cập nhật thời điểm kết thúc
+                                            await db.events.update_one(
+                                                {"_id": open_ch_event["_id"]},
+                                                {"$set": {"resolved_at": now, "duration_seconds": dur}}
+                                            )
+                                            logger.info(f"RESOLVED: Camera {ch_name} (Ch {ch_num}) on {dev_name} RECOVERED after {round(dur/60, 1)} min.")
+                                            if open_ch_event.get("alert_sent"):
+                                                now_str = now.strftime("%H:%M:%S ngày %d/%m/%Y")
+                                                note = f"Camera {ch_name} (Kênh {ch_num}) đã có tín hiệu hình ảnh trở lại sau {round(dur/60, 1)} phút."
+                                                html = EmailService.build_incident_html(dev_name, f"{ch_name} (Kênh {ch_num})", "recovered", now_str, note)
+                                                asyncio.create_task(EmailService.send_alert(f"✅ [PHỤC HỒI] Camera {ch_name} ({dev_name}) ĐÃ CÓ TÍN HIỆU LẠI", html))
+                            else:
+                                # Kênh vẫn đang mất tín hiệu -> kiểm tra nếu kéo dài vượt ngưỡng thì gửi email cảnh báo
+                                if new_ch_status == "video_loss":
+                                    open_ch_event = await db.events.find_one({
+                                        "target_type": "channel",
+                                        "$or": [
+                                            {"target_id": str(ch_info["_id"])},
+                                            {"device_id": str(dev_id), "channel_no": ch_num}
+                                        ],
+                                        "event": "video_loss",
+                                        "resolved_at": None,
+                                        "alert_sent": {"$ne": True}
+                                    }, sort=[("timestamp", -1)])
+                                    if open_ch_event:
+                                        ev_time = to_aware_vn(open_ch_event.get("timestamp")) or now
+                                        dur = max(0, int((now - ev_time).total_seconds()))
+                                        if dur >= settings.min_incident_seconds:
+                                            await db.events.update_one({"_id": open_ch_event["_id"]}, {"$set": {"alert_sent": True}})
+                                            now_str = ev_time.strftime("%H:%M:%S ngày %d/%m/%Y")
+                                            note = f"Camera {ch_name} (Kênh {ch_num}) bị mất tín hiệu hình ảnh liên tục hơn {round(dur/60, 1)} phút."
+                                            html = EmailService.build_incident_html(dev_name, f"{ch_name} (Kênh {ch_num})", "video_loss", now_str, note)
+                                            asyncio.create_task(EmailService.send_alert(f"🚨 [CẢNH BÁO] Camera {ch_name} ({dev_name}) MẤT TÍN HIỆU", html))
 
                             # Cập nhật kênh
                             ch_update = {

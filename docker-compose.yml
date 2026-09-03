@@ -12,6 +12,7 @@ services:
       - MONGODB_URI=${MONGODB_URI:-mongodb+srv://lenhan16587_db_user:g3ib5kVSL42WNfON@quanlycamera.uh2fyhm.mongodb.net/?retryWrites=true&w=majority&appName=quanlycamera}
       - DATABASE_NAME=${DATABASE_NAME:-quanlycamera}
       - SCAN_INTERVAL_SECONDS=${SCAN_INTERVAL_SECONDS:-60}
+      - MIN_INCIDENT_SECONDS=${MIN_INCIDENT_SECONDS:-300}
       - TZ=Asia/Ho_Chi_Minh
     networks:
       - camera_network
