@@ -175,8 +175,10 @@ class MonitorService:
                             prev_ch_status = ch_info.get("status", "online")
                             new_ch_status = channel_status_map.get(ch_num, "online")
 
-                            # Nếu kênh bị tắt bởi người dùng thì bỏ qua
-                            if not ch_info.get("enabled", True):
+                            # Nếu kênh đang ở chế độ bảo trì hoặc bị tắt bởi người dùng thì bỏ qua
+                            if prev_ch_status == "maintenance":
+                                new_ch_status = "maintenance"
+                            elif not ch_info.get("enabled", True):
                                 new_ch_status = "disabled"
 
                             if prev_ch_status != new_ch_status:

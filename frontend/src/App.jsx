@@ -24,7 +24,9 @@ import {
   Download,
   Database,
   Calendar,
-  Search
+  Search,
+  Wrench,
+  FileEdit
 } from 'lucide-react';
 
 const API_BASE = '/api';
@@ -106,6 +108,9 @@ export default function App() {
   // Event tab filter & search
   const [eventFilterStatus, setEventFilterStatus] = useState('all'); // 'all' | 'unresolved' | 'resolved'
   const [eventSearchText, setEventSearchText] = useState('');
+  const [editingEvent, setEditingEvent] = useState(null); // Sự cố đang được cập nhật tiến độ / ghi chú
+  const [noteText, setNoteText] = useState('');
+  const [noteSaving, setNoteSaving] = useState(false);
 
   // Report filters
   const [reportYear, setReportYear] = useState(new Date().getFullYear());
@@ -239,6 +244,48 @@ export default function App() {
       await fetchData();
     } catch (err) {
       console.error('Toggle enable error:', err);
+    }
+  };
+
+  // Toggle maintenance mode for a channel
+  const handleToggleMaintenance = async (channelId, channelName) => {
+    try {
+      const res = await fetch(`${API_BASE}/channels/${channelId}/toggle-maintenance`, { method: 'POST' });
+      const data = await res.json();
+      alert(data.message || `Đã cập nhật trạng thái bảo trì cho ${channelName}`);
+      await fetchData();
+    } catch (err) {
+      alert(`Lỗi khi chuyển trạng thái bảo trì: ${err.message}`);
+    }
+  };
+
+  // Open note edit modal
+  const openNoteModal = (eventItem) => {
+    setEditingEvent(eventItem);
+    setNoteText(eventItem.note || '');
+  };
+
+  // Save event note (lý do / tiến độ khắc phục)
+  const handleSaveEventNote = async (e) => {
+    e.preventDefault();
+    if (!editingEvent) return;
+    try {
+      setNoteSaving(true);
+      const res = await fetch(`${API_BASE}/events/${editingEvent.id}/note`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note: noteText })
+      });
+      if (res.ok) {
+        setEditingEvent(null);
+        await fetchData();
+      } else {
+        alert('Không thể lưu ghi chú sự cố');
+      }
+    } catch (err) {
+      alert(`Lỗi lưu ghi chú: ${err.message}`);
+    } finally {
+      setNoteSaving(false);
     }
   };
 
@@ -720,16 +767,22 @@ export default function App() {
                   <div className="channels-grid">
                     {devChannels.map(ch => {
                       const isLoss = ch.status === 'video_loss';
-                      const isUnconn = ch.status === 'unconnected' || ch.status === 'disabled' || ch.enabled === false;
+                      const isMaint = ch.status === 'maintenance';
+                      const isUnconn = ch.status === 'unconnected' || ch.status === 'disabled' || (ch.enabled === false && !isMaint);
                       const isOnline = ch.status === 'online';
 
                       return (
-                        <div key={ch.id} className={`camera-card ${isLoss ? 'video-loss' : isUnconn ? 'unconnected' : ''}`}>
+                        <div key={ch.id} className={`camera-card ${isLoss ? 'video-loss' : isMaint ? 'maintenance' : isUnconn ? 'unconnected' : ''}`}>
                           <div className="camera-card-top">
                             <span className="camera-index">CH {ch.channel_no.toString().padStart(2, '0')}</span>
                             {isLoss && (
                               <span className="camera-status-badge video-loss">
                                 <AlertTriangle size={12} /> MẤT TÍN HIỆU
+                              </span>
+                            )}
+                            {isMaint && (
+                              <span className="camera-status-badge maintenance">
+                                <Wrench size={12} /> ĐANG BẢO TRÌ
                               </span>
                             )}
                             {isOnline && (
@@ -749,11 +802,26 @@ export default function App() {
                           </div>
 
                           <div className="camera-card-footer">
-                            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                              {isLoss ? 'Cần kiểm tra dây/nguồn' : isOnline ? 'Đang ghi hình' : 'Kênh trống / Tắt'}
+                            <span style={{ fontSize: '0.72rem', color: isMaint ? '#fbbf24' : 'var(--text-muted)' }}>
+                              {isLoss ? 'Cần kiểm tra dây/nguồn' : isMaint ? 'Tạm ngưng tính SLA' : isOnline ? 'Đang ghi hình' : 'Kênh trống / Tắt'}
                             </span>
                             
                             <div style={{ display: 'flex', gap: 6 }}>
+                              {/* Nút Chế độ Bảo trì (Tạm ngưng tính lỗi SLA) */}
+                              <button 
+                                className="sim-btn"
+                                style={{ 
+                                  color: isMaint ? '#fbbf24' : undefined,
+                                  borderColor: isMaint ? 'rgba(245, 158, 11, 0.4)' : undefined,
+                                  background: isMaint ? 'rgba(245, 158, 11, 0.15)' : undefined
+                                }}
+                                title={isMaint ? "Kết thúc bảo trì, tiếp tục giám sát kênh này" : "Tạm ngưng giám sát (Chế độ bảo trì, chờ sửa chữa)"}
+                                onClick={() => handleToggleMaintenance(ch.id, ch.name)}
+                              >
+                                <Wrench size={11} style={{ display: 'inline', marginRight: 2 }} />
+                                {isMaint ? "Xong bảo trì" : "Bảo trì"}
+                              </button>
+
                               {/* Nút bật / tắt theo dõi kênh trống */}
                               <button 
                                 className="sim-btn"
@@ -1150,13 +1218,14 @@ export default function App() {
                   <th>Loại Sự Kiện</th>
                   <th style={{ minWidth: '170px' }}>Thời Điểm Phục Hồi (DD/MM/YYYY)</th>
                   <th>Thời Lượng Gián Đoạn</th>
-                  <th>Chi Tiết Sự Cố</th>
+                  <th>Chi Tiết & Tiến Độ Khắc Phục</th>
+                  <th style={{ textAlign: 'center' }}>Thao Tác</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredEvents.length === 0 ? (
                   <tr>
-                    <td colSpan={6} style={{ textAlign: 'center', padding: '36px', color: 'var(--text-muted)' }}>
+                    <td colSpan={7} style={{ textAlign: 'center', padding: '36px', color: 'var(--text-muted)' }}>
                       {events.length === 0 
                         ? 'Chưa có sự cố mất tín hiệu nào được ghi nhận. Hệ thống camera đang hoạt động ổn định 24/7!'
                         : 'Không có sự cố nào khớp với bộ lọc hoặc từ khóa tìm kiếm.'}
@@ -1199,8 +1268,20 @@ export default function App() {
                           {formatDurationVN(ev.duration_seconds, ev.timestamp)}
                         </td>
 
-                        <td style={{ color: 'var(--text-secondary)', fontSize: '0.83rem' }}>
+                        <td style={{ color: '#e2e8f0', fontSize: '0.83rem' }}>
                           {ev.note}
+                        </td>
+
+                        <td style={{ textAlign: 'center' }}>
+                          <button
+                            className="btn btn-secondary btn-sm"
+                            style={{ padding: '4px 10px', fontSize: '0.78rem' }}
+                            title="Nhập lý do sự cố / tiến độ khắc phục (sẽ xuất ra file Excel Hải quan)"
+                            onClick={() => openNoteModal(ev)}
+                          >
+                            <FileEdit size={12} style={{ display: 'inline', marginRight: 3 }} />
+                            Ghi chú lý do
+                          </button>
                         </td>
                       </tr>
                     );
@@ -1497,6 +1578,85 @@ export default function App() {
                 </button>
                 <button type="submit" className="btn btn-primary">
                   {editingDevice ? 'Lưu Thay Đổi' : 'Thêm Thiết Bị'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL CẬP NHẬT TIẾN ĐỘ / LÝ DO SỰ CỐ DÀI NGÀY */}
+      {editingEvent && (
+        <div className="modal-backdrop" onClick={() => setEditingEvent(null)}>
+          <div className="modal-content" style={{ maxWidth: '560px' }} onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <FileEdit size={20} color="#38bdf8" /> Cập Nhật Lý Do & Tiến Độ Khắc Phục
+              </h3>
+              <button className="modal-close" onClick={() => setEditingEvent(null)}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEventNote}>
+              <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                <div style={{ background: 'rgba(255,255,255,0.03)', padding: '12px 16px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', fontSize: '0.85rem' }}>
+                  <div style={{ color: 'var(--text-secondary)' }}>Đối tượng sự cố:</div>
+                  <div style={{ fontWeight: 700, color: '#ffffff', fontSize: '0.95rem', marginTop: 2 }}>{editingEvent.target_name}</div>
+                  <div style={{ marginTop: 6, color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+                    Thời điểm ghi nhận: {formatDateTimeVN(editingEvent.timestamp)}
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <label style={{ fontSize: '0.88rem', fontWeight: 600 }}>
+                    Nội dung giải trình / Tiến độ sửa chữa:
+                  </label>
+                  <textarea 
+                    className="form-input" 
+                    rows={4}
+                    style={{ resize: 'vertical', fontSize: '0.88rem', lineHeight: '1.5' }}
+                    placeholder="Ví dụ: Đang chờ thợ thay nguồn 12V / Đã gửi hãng bảo hành, hẹn ngày 05/09 lắp lại / Đứt cáp quang nội bộ đang kéo dây mới..."
+                    required
+                    value={noteText}
+                    onChange={(e) => setNoteText(e.target.value)}
+                  />
+                  <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginTop: 4 }}>
+                    💡 <em>Ghi chú này sẽ được tự động xuất thẳng vào cột Ghi chú trên <strong>Biểu mẫu Hải quan 31 ngày</strong> và file Excel SLA để phục vụ công tác thanh tra.</em>
+                  </div>
+                </div>
+
+                {/* Gợi ý lý do nhanh */}
+                <div>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: 6 }}>Chọn nhanh mẫu lý do thường gặp:</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {[
+                      "Đang chờ thợ thay adapter nguồn 12V",
+                      "Đã gửi hãng bảo hành, hẹn ngày lắp lại",
+                      "Đứt cáp tín hiệu do thi công, đang xử lý kéo lại dây",
+                      "Hỏng mắt camera, đang chờ mua thiết bị thay thế",
+                      "Mất nguồn điện tổng khu vực, đang liên hệ điện lực"
+                    ].map((sample, idx) => (
+                      <button
+                        key={idx}
+                        type="button"
+                        className="sim-btn"
+                        style={{ fontSize: '0.75rem', padding: '4px 8px', borderRadius: 4 }}
+                        onClick={() => setNoteText(sample)}
+                      >
+                        + {sample}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="modal-footer">
+                <button type="button" className="btn btn-secondary" onClick={() => setEditingEvent(null)}>
+                  Đóng
+                </button>
+                <button type="submit" className="btn btn-primary" disabled={noteSaving}>
+                  {noteSaving ? 'Đang lưu...' : 'Lưu Ghi Chú Giải Trình'}
                 </button>
               </div>
             </form>

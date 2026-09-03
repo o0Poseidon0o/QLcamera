@@ -491,6 +491,20 @@ body {
   margin-top: 4px;
 }
 
+.camera-card.video-loss {
+  background: var(--status-loss-bg);
+  border-color: rgba(239, 68, 68, 0.4);
+}
+.camera-card.maintenance {
+  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+.camera-card.unconnected {
+  opacity: 0.65;
+  background: rgba(255, 255, 255, 0.02);
+  border-style: dashed;
+}
+
 .camera-status-badge {
   display: inline-flex;
   align-items: center;
@@ -507,6 +521,11 @@ body {
 .camera-status-badge.video-loss {
   background: var(--status-loss-bg);
   color: #f87171;
+}
+.camera-status-badge.maintenance {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.4);
 }
 .camera-status-badge.unconnected {
   background: rgba(148, 163, 184, 0.14);

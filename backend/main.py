@@ -63,6 +63,9 @@ class ChannelUpdate(BaseModel):
     name: Optional[str] = None
     enabled: Optional[bool] = None
 
+class EventNoteUpdate(BaseModel):
+    note: str
+
 # Lifespan: connect DB, seed demo Dahua devices if empty, start worker
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -388,13 +391,59 @@ async def trigger_scan():
     await MonitorService.run_single_scan()
     return {"success": True, "message": "Đã hoàn thành quét hệ thống"}
 
+@app.post("/api/channels/{channel_id}/toggle-maintenance")
+async def toggle_channel_maintenance(channel_id: str):
+    """Chuyển đổi trạng thái Bảo Trì cho kênh camera (không tính downtime, không cảnh báo)."""
+    db = get_db()
+    if not ObjectId.is_valid(channel_id):
+        raise HTTPException(status_code=400, detail="Invalid Channel ID")
+
+    channel = await db.channels.find_one({"_id": ObjectId(channel_id)})
+    if not channel:
+        raise HTTPException(status_code=404, detail="Camera không tồn tại")
+
+    current_status = channel.get("status", "online")
+    is_maintenance = current_status == "maintenance"
+
+    if is_maintenance:
+        new_status = "online"
+        new_enabled = True
+        msg = f"Đã kết thúc bảo trì cho {channel.get('name', 'Camera')}. Tiếp tục giám sát tự động."
+    else:
+        new_status = "maintenance"
+        new_enabled = False
+        msg = f"Đã chuyển {channel.get('name', 'Camera')} sang Chế độ Bảo trì (Tạm ngưng tính lỗi SLA)."
+
+    await db.channels.update_one(
+        {"_id": ObjectId(channel_id)},
+        {"$set": {"status": new_status, "enabled": new_enabled}}
+    )
+    return {"success": True, "status": new_status, "is_maintenance": not is_maintenance, "message": msg}
+
 # 4. Events Endpoints
 @app.get("/api/events")
-async def list_events(limit: int = Query(50, ge=1, le=200)):
+async def list_events(limit: int = Query(100, ge=1, le=500)):
     db = get_db()
     cursor = db.events.find().sort("timestamp", -1).limit(limit)
     events = await cursor.to_list(limit)
     return [serialize_doc(e) for e in events]
+
+@app.put("/api/events/{event_id}/note")
+async def update_event_note(event_id: str, payload: EventNoteUpdate):
+    """Cập nhật tiến độ / lý do giải trình sự cố trực tiếp (sẽ xuất ra file Excel Hải quan)."""
+    db = get_db()
+    if not ObjectId.is_valid(event_id):
+        raise HTTPException(status_code=400, detail="Invalid Event ID")
+
+    res = await db.events.update_one(
+        {"_id": ObjectId(event_id)},
+        {"$set": {"note": payload.note}}
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Không tìm thấy sự cố")
+
+    updated = await db.events.find_one({"_id": ObjectId(event_id)})
+    return serialize_doc(updated)
 
 # 5. Monthly Reports Endpoints
 @app.get("/api/reports/monthly")
