@@ -10,6 +10,14 @@ def get_vn_now() -> datetime:
     """Trả về thời gian hiện tại chuẩn múi giờ Việt Nam (UTC+7)."""
     return datetime.now(VN_TZ)
 
+def to_aware_vn(dt) -> datetime:
+    """Chuyển đổi datetime sang UTC+7 đảm bảo có timezone."""
+    if dt is None:
+        return None
+    if getattr(dt, 'tzinfo', None) is not None:
+        return dt.astimezone(VN_TZ)
+    return dt.replace(tzinfo=timezone.utc).astimezone(VN_TZ)
+
 logger = logging.getLogger("camera_manager.db")
 
 class Database:

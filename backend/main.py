@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from config import settings
-from database import connect_to_mongo, close_mongo_connection, get_db, get_vn_now, VN_TZ
+from database import connect_to_mongo, close_mongo_connection, get_db, get_vn_now, VN_TZ, to_aware_vn
 from services.dahua_service import DahuaService
 from services.monitor_service import MonitorService
 from services.report_service import ReportService
@@ -404,6 +404,7 @@ async def toggle_channel_maintenance(channel_id: str):
 
     current_status = channel.get("status", "online")
     is_maintenance = current_status == "maintenance"
+    now = get_vn_now()
 
     if is_maintenance:
         new_status = "online"
@@ -414,9 +415,80 @@ async def toggle_channel_maintenance(channel_id: str):
         new_enabled = False
         msg = f"Đã chuyển {channel.get('name', 'Camera')} sang Chế độ Bảo trì (Tạm ngưng tính lỗi SLA)."
 
+        # Tự động chốt sự cố đang gián đoạn nếu có, ghi chú chuyển bảo trì để dừng tính downtime
+        open_event = await db.events.find_one({
+            "target_type": "channel",
+            "$or": [
+                {"target_id": str(channel_id)},
+                {"device_id": str(channel.get("device_id")), "channel_no": channel.get("channel_no")}
+            ],
+            "resolved_at": None
+        }, sort=[("timestamp", -1)])
+        if open_event:
+            ev_time = to_aware_vn(open_event.get("timestamp")) or now
+            dur = max(0, int((now - ev_time).total_seconds()))
+            curr_note = open_event.get("note") or ""
+            updated_note = f"{curr_note} [Đã chuyển sang bảo trì lúc {now.strftime('%H:%M:%S %d/%m/%Y')}]".strip()
+            await db.events.update_one(
+                {"_id": open_event["_id"]},
+                {"$set": {
+                    "resolved_at": now,
+                    "duration_seconds": dur,
+                    "note": updated_note
+                }}
+            )
+
     await db.channels.update_one(
         {"_id": ObjectId(channel_id)},
         {"$set": {"status": new_status, "enabled": new_enabled}}
+    )
+    return {"success": True, "status": new_status, "is_maintenance": not is_maintenance, "message": msg}
+
+@app.post("/api/devices/{device_id}/toggle-maintenance")
+async def toggle_device_maintenance(device_id: str):
+    """Chuyển đổi trạng thái Bảo Trì cho toàn bộ Đầu Thu NVR (tạm ngưng tính downtime)."""
+    db = get_db()
+    if not ObjectId.is_valid(device_id):
+        raise HTTPException(status_code=400, detail="Invalid Device ID")
+
+    device = await db.devices.find_one({"_id": ObjectId(device_id)})
+    if not device:
+        raise HTTPException(status_code=404, detail="Đầu thu không tồn tại")
+
+    current_status = device.get("status", "online")
+    is_maintenance = current_status == "maintenance"
+    now = get_vn_now()
+
+    if is_maintenance:
+        new_status = "online"
+        msg = f"Đã kết thúc bảo trì cho đầu thu {device.get('name', 'NVR')}. Tiếp tục giám sát tự động."
+    else:
+        new_status = "maintenance"
+        msg = f"Đã chuyển đầu thu {device.get('name', 'NVR')} sang Chế độ Bảo trì (Tạm ngưng tính lỗi SLA)."
+
+        # Tự động chốt sự cố đang gián đoạn nếu có
+        open_event = await db.events.find_one({
+            "target_type": "device",
+            "target_id": str(device_id),
+            "resolved_at": None
+        }, sort=[("timestamp", -1)])
+        if open_event:
+            ev_time = to_aware_vn(open_event.get("timestamp")) or now
+            dur = max(0, int((now - ev_time).total_seconds()))
+            curr_note = open_event.get("note") or ""
+            updated_note = f"{curr_note} [Đã chuyển sang bảo trì lúc {now.strftime('%H:%M:%S %d/%m/%Y')}]".strip()
+            await db.events.update_one(
+                {"_id": open_event["_id"]},
+                {"$set": {
+                    "resolved_at": now,
+                    "duration_seconds": dur,
+                    "note": updated_note
+                }}
+            )
+
+    await db.devices.update_one(
+        {"_id": ObjectId(device_id)},
+        {"$set": {"status": new_status}}
     )
     return {"success": True, "status": new_status, "is_maintenance": not is_maintenance, "message": msg}
 

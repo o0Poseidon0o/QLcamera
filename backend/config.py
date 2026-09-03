@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     )
     database_name: str = os.getenv("DATABASE_NAME", "quanlycamera")
     scan_interval_seconds: int = int(os.getenv("SCAN_INTERVAL_SECONDS", "60"))
-    min_incident_seconds: int = int(os.getenv("MIN_INCIDENT_SECONDS", "300")) # Mặc định 5 phút
+    min_incident_seconds: int = int(os.getenv("MIN_INCIDENT_SECONDS", "1800")) # Mặc định 30 phút (1800 giây)
     host: str = os.getenv("HOST", "0.0.0.0")
     port: int = int(os.getenv("PORT", "8000"))
 

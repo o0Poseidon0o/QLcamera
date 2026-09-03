@@ -66,7 +66,10 @@ class MonitorService:
                         mock_unconnected_channels=dev.get("mock_unconnected_channels", [])
                     )
 
-                new_nvr_status = "online" if nvr_online else "offline"
+                if prev_status == "maintenance":
+                    new_nvr_status = "maintenance"
+                else:
+                    new_nvr_status = "online" if nvr_online else "offline"
 
                 # 1. Xử lý sự kiện Đầu thu thay đổi trạng thái
                 if prev_status != new_nvr_status:
@@ -104,7 +107,7 @@ class MonitorService:
                                 logger.info(f"Đầu thu {dev_name} gián đoạn quá ngắn ({round(dur/60, 1)}p < {round(settings.min_incident_seconds/60, 1)}p). Bỏ qua không tính sự cố.")
                                 await db.events.delete_one({"_id": open_event["_id"]})
                             else:
-                                # Sự cố thực sự (>= 5 phút): Cập nhật thời điểm kết thúc
+                                # Sự cố thực sự (>= 30 phút): Cập nhật thời điểm kết thúc
                                 await db.events.update_one(
                                     {"_id": open_event["_id"]},
                                     {"$set": {"resolved_at": now, "duration_seconds": dur}}
@@ -219,11 +222,11 @@ class MonitorService:
                                         dur = max(0, int((now - ev_time).total_seconds()))
 
                                         if dur < settings.min_incident_seconds:
-                                            # Gián đoạn quá ngắn (< 5 phút), chưa thành sự cố -> Xóa bỏ khỏi nhật ký
+                                            # Gián đoạn quá ngắn (< 30 phút), chưa thành sự cố -> Xóa bỏ khỏi nhật ký
                                             logger.info(f"Tín hiệu camera {ch_name} gián đoạn quá ngắn ({round(dur/60, 1)}p < {round(settings.min_incident_seconds/60, 1)}p). Bỏ qua không tính sự cố.")
                                             await db.events.delete_one({"_id": open_ch_event["_id"]})
                                         else:
-                                            # Sự cố thực sự (>= 5 phút): Cập nhật thời điểm kết thúc
+                                            # Sự cố thực sự (>= 30 phút): Cập nhật thời điểm kết thúc
                                             await db.events.update_one(
                                                 {"_id": open_ch_event["_id"]},
                                                 {"$set": {"resolved_at": now, "duration_seconds": dur}}

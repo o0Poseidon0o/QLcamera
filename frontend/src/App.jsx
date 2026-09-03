@@ -259,6 +259,18 @@ export default function App() {
     }
   };
 
+  // Toggle maintenance mode for a device (NVR)
+  const handleToggleDeviceMaintenance = async (deviceId, deviceName) => {
+    try {
+      const res = await fetch(`${API_BASE}/devices/${deviceId}/toggle-maintenance`, { method: 'POST' });
+      const data = await res.json();
+      alert(data.message || `Đã cập nhật trạng thái bảo trì cho đầu thu ${deviceName}`);
+      await fetchData();
+    } catch (err) {
+      alert(`Lỗi khi chuyển trạng thái bảo trì đầu thu: ${err.message}`);
+    }
+  };
+
   // Open note edit modal
   const openNoteModal = (eventItem) => {
     setEditingEvent(eventItem);
@@ -707,7 +719,7 @@ export default function App() {
               const isOffline = dev.status === 'offline';
 
               return (
-                <div key={dev.id} className={`nvr-card ${isOffline ? 'offline-device' : ''}`}>
+                <div key={dev.id} className={`nvr-card ${isOffline ? 'offline-device' : dev.status === 'maintenance' ? 'maintenance-device' : ''}`}>
                   {/* NVR Header */}
                   <div className="nvr-card-header">
                     <div className="nvr-info-main">
@@ -734,6 +746,11 @@ export default function App() {
                               Chế độ Demo/Mock
                             </span>
                           )}
+                          {dev.status === 'maintenance' && (
+                            <span style={{ color: '#fbbf24', fontSize: '0.75rem', background: 'rgba(245,158,11,0.15)', border: '1px solid #f59e0b', padding: '1px 7px', borderRadius: 4, fontWeight: 600 }}>
+                              🔧 Đang Bảo Trì Đầu Thu
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -744,6 +761,15 @@ export default function App() {
                           ⚠️ {devLossCount} Camera mất tín hiệu
                         </span>
                       )}
+
+                      {/* Nút Bảo Trì cho cả Đầu thu NVR */}
+                      <button 
+                        className={`btn-maint ${dev.status === 'maintenance' ? 'active' : ''}`}
+                        onClick={() => handleToggleDeviceMaintenance(dev.id, dev.name)}
+                        title={dev.status === 'maintenance' ? "Kết thúc bảo trì đầu thu, tiếp tục giám sát" : "Chuyển toàn bộ đầu thu sang Chế độ Bảo trì (tạm ngưng tính SLA)"}
+                      >
+                        <Wrench size={13} /> {dev.status === 'maintenance' ? "Xong bảo trì NVR" : "Bảo trì NVR"}
+                      </button>
 
                       <button 
                         className="btn btn-secondary btn-sm" 
@@ -807,18 +833,13 @@ export default function App() {
                             </span>
                             
                             <div style={{ display: 'flex', gap: 6 }}>
-                              {/* Nút Chế độ Bảo trì (Tạm ngưng tính lỗi SLA) */}
+                              {/* Nút Chế độ Bảo trì (Tạm ngưng tính lỗi SLA) - Nổi bật & Rõ ràng */}
                               <button 
-                                className="sim-btn"
-                                style={{ 
-                                  color: isMaint ? '#fbbf24' : undefined,
-                                  borderColor: isMaint ? 'rgba(245, 158, 11, 0.4)' : undefined,
-                                  background: isMaint ? 'rgba(245, 158, 11, 0.15)' : undefined
-                                }}
+                                className={`btn-maint ${isMaint ? 'active' : ''}`}
                                 title={isMaint ? "Kết thúc bảo trì, tiếp tục giám sát kênh này" : "Tạm ngưng giám sát (Chế độ bảo trì, chờ sửa chữa)"}
                                 onClick={() => handleToggleMaintenance(ch.id, ch.name)}
                               >
-                                <Wrench size={11} style={{ display: 'inline', marginRight: 2 }} />
+                                <Wrench size={12} />
                                 {isMaint ? "Xong bảo trì" : "Bảo trì"}
                               </button>
 
@@ -1273,15 +1294,60 @@ export default function App() {
                         </td>
 
                         <td style={{ textAlign: 'center' }}>
-                          <button
-                            className="btn btn-secondary btn-sm"
-                            style={{ padding: '4px 10px', fontSize: '0.78rem' }}
-                            title="Nhập lý do sự cố / tiến độ khắc phục (sẽ xuất ra file Excel Hải quan)"
-                            onClick={() => openNoteModal(ev)}
-                          >
-                            <FileEdit size={12} style={{ display: 'inline', marginRight: 3 }} />
-                            Ghi chú lý do
-                          </button>
+                          <div style={{ display: 'flex', gap: 6, justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap' }}>
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              style={{ padding: '4px 8px', fontSize: '0.78rem' }}
+                              title="Nhập lý do sự cố / tiến độ khắc phục (sẽ xuất ra file Excel Hải quan)"
+                              onClick={() => openNoteModal(ev)}
+                            >
+                              <FileEdit size={12} style={{ display: 'inline', marginRight: 3 }} />
+                              Ghi chú lý do
+                            </button>
+
+                            {/* Nút Chuyển Bảo Trì trực tiếp từ bảng sự cố */}
+                            {(() => {
+                              if (ev.target_type === 'channel') {
+                                const relatedChannel = channels.find(c => 
+                                  String(c.id) === String(ev.target_id) || 
+                                  (String(c.device_id) === String(ev.device_id) && Number(c.channel_no) === Number(ev.channel_no))
+                                );
+                                if (!relatedChannel) return null;
+                                const isChMaint = relatedChannel.status === 'maintenance';
+                                return (
+                                  <button
+                                    className={`btn-maint ${isChMaint ? 'active' : ''}`}
+                                    style={{ padding: '4px 8px', fontSize: '0.78rem' }}
+                                    title={isChMaint 
+                                      ? `Kênh ${ev.target_name} đang ở chế độ bảo trì. Bấm để kết thúc bảo trì.` 
+                                      : `Chuyển ngay ${ev.target_name} sang chế độ bảo trì (dừng cảnh báo và ngưng tính lỗi SLA).`}
+                                    onClick={() => handleToggleMaintenance(relatedChannel.id, ev.target_name)}
+                                  >
+                                    <Wrench size={12} />
+                                    {isChMaint ? 'Xong bảo trì' : 'Chuyển bảo trì'}
+                                  </button>
+                                );
+                              } else if (ev.target_type === 'device') {
+                                const devItem = devices.find(d => String(d.id) === String(ev.target_id) || String(d.id) === String(ev.device_id));
+                                if (!devItem) return null;
+                                const isDevMaint = devItem.status === 'maintenance';
+                                return (
+                                  <button
+                                    className={`btn-maint ${isDevMaint ? 'active' : ''}`}
+                                    style={{ padding: '4px 8px', fontSize: '0.78rem' }}
+                                    title={isDevMaint 
+                                      ? `Đầu thu ${ev.target_name} đang bảo trì. Bấm để kết thúc.` 
+                                      : `Chuyển đầu thu ${ev.target_name} sang chế độ bảo trì.`}
+                                    onClick={() => handleToggleDeviceMaintenance(devItem.id, ev.target_name)}
+                                  >
+                                    <Wrench size={12} />
+                                    {isDevMaint ? 'Xong bảo trì' : 'Chuyển bảo trì'}
+                                  </button>
+                                );
+                              }
+                              return null;
+                            })()}
+                          </div>
                         </td>
                       </tr>
                     );

@@ -393,6 +393,13 @@ body {
   box-shadow: 0 0 12px var(--status-loss);
   animation: pulse-red 1.8s infinite;
 }
+.status-dot.maintenance {
+  background: #f59e0b;
+  box-shadow: 0 0 12px #f59e0b;
+}
+.nvr-card.maintenance-device {
+  border-color: rgba(245, 158, 11, 0.4);
+}
 
 @keyframes pulse-red {
   0% { transform: scale(0.95); opacity: 0.8; }
@@ -559,6 +566,43 @@ body {
   border-color: #60a5fa;
   color: #93c5fd;
   background: rgba(59, 130, 246, 0.1);
+}
+
+/* Nút Bảo trì nổi bật & chuyên nghiệp */
+.btn-maint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid #f59e0b;
+  color: #fbbf24;
+  font-size: 0.76rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+.btn-maint:hover {
+  background: rgba(245, 158, 11, 0.3);
+  border-color: #fbbf24;
+  color: #ffffff;
+  box-shadow: 0 0 10px rgba(245, 158, 11, 0.4);
+  transform: translateY(-1px);
+}
+.btn-maint.active {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  border: 1px solid #fde047;
+  color: #0f172a;
+  font-weight: 700;
+  box-shadow: 0 0 12px rgba(245, 158, 11, 0.5);
+}
+.btn-maint.active:hover {
+  background: linear-gradient(135deg, #fbbf24, #f59e0b);
+  color: #000000;
+  box-shadow: 0 0 16px rgba(245, 158, 11, 0.7);
 }
 
 /* Reports Section */

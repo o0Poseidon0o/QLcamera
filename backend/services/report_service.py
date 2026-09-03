@@ -42,8 +42,8 @@ class ReportService:
         events = await events_cursor.to_list(2000)
         now_vn = get_vn_now()
 
-        # Bỏ qua các sự cố gián đoạn quá ngắn dưới ngưỡng (ví dụ < 5 phút)
-        min_sec = getattr(settings, "min_incident_seconds", 300)
+        # Bỏ qua các sự cố gián đoạn quá ngắn dưới ngưỡng (ví dụ < 30 phút)
+        min_sec = getattr(settings, "min_incident_seconds", 1800)
         valid_events = []
         for e in events:
             dur = e.get("duration_seconds")
@@ -361,8 +361,8 @@ class ReportService:
         events = await events_cursor.to_list(2000)
         now_vn = get_vn_now()
 
-        # Bỏ qua sự cố gián đoạn ngắn dưới ngưỡng
-        min_sec = getattr(settings, "min_incident_seconds", 300)
+        # Bỏ qua sự cố gián đoạn ngắn dưới ngưỡng (< 30 phút)
+        min_sec = getattr(settings, "min_incident_seconds", 1800)
         valid_events = []
         for e in events:
             dur = e.get("duration_seconds")
