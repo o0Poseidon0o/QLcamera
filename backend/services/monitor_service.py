@@ -1,12 +1,19 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import logging
 from typing import Optional
-from database import get_db
+from database import get_db, get_vn_now, VN_TZ
 from services.dahua_service import DahuaService
 from services.email_service import EmailService
 
 logger = logging.getLogger("camera_manager.monitor")
+
+def to_aware_vn(dt):
+    if dt is None:
+        return None
+    if getattr(dt, 'tzinfo', None) is not None:
+        return dt.astimezone(VN_TZ)
+    return dt.replace(tzinfo=timezone.utc).astimezone(VN_TZ)
 
 class MonitorService:
     _is_running: bool = False
@@ -19,7 +26,7 @@ class MonitorService:
             logger.warning("Database not connected, skipping scan.")
             return
 
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = get_vn_now()
         devices_cursor = db.devices.find()
         devices = await devices_cursor.to_list(length=100)
 
@@ -95,8 +102,8 @@ class MonitorService:
                         }, sort=[("timestamp", -1)])
                         
                         if open_event:
-                            ev_time = open_event["timestamp"].replace(tzinfo=None) if getattr(open_event["timestamp"], 'tzinfo', None) else open_event["timestamp"]
-                            dur = int((now - ev_time).total_seconds())
+                            ev_time = to_aware_vn(open_event.get("timestamp")) or now
+                            dur = max(0, int((now - ev_time).total_seconds()))
                             await db.events.update_one(
                                 {"_id": open_event["_id"]},
                                 {"$set": {"resolved_at": now, "duration_seconds": dur}}
@@ -207,8 +214,8 @@ class MonitorService:
                                     }, sort=[("timestamp", -1)])
 
                                     if open_ch_event:
-                                        ev_time = open_ch_event["timestamp"].replace(tzinfo=None) if getattr(open_ch_event["timestamp"], 'tzinfo', None) else open_ch_event["timestamp"]
-                                        dur = int((now - ev_time).total_seconds())
+                                        ev_time = to_aware_vn(open_ch_event.get("timestamp")) or now
+                                        dur = max(0, int((now - ev_time).total_seconds()))
                                         await db.events.update_one(
                                             {"_id": open_ch_event["_id"]},
                                             {"$set": {"resolved_at": now, "duration_seconds": dur}}

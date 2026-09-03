@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from config import settings
-from database import connect_to_mongo, close_mongo_connection, get_db
+from database import connect_to_mongo, close_mongo_connection, get_db, get_vn_now, VN_TZ
 from services.dahua_service import DahuaService
 from services.monitor_service import MonitorService
 from services.report_service import ReportService
@@ -161,19 +161,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Helper ObjectId serializer
+# Helper ObjectId & DateTime serializer (UTC+7 Việt Nam)
 def serialize_doc(doc):
     if not doc:
         return None
     doc["id"] = str(doc["_id"])
     del doc["_id"]
+    for key, val in list(doc.items()):
+        if isinstance(val, datetime):
+            if getattr(val, 'tzinfo', None) is not None:
+                doc[key] = val.astimezone(VN_TZ).isoformat()
+            else:
+                doc[key] = val.replace(tzinfo=timezone.utc).astimezone(VN_TZ).isoformat()
     return doc
 
 # --- API ROUTES ---
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "time": datetime.now(timezone.utc).isoformat()}
+    return {"status": "ok", "time": get_vn_now().isoformat(), "timezone": "UTC+7"}
 
 # 1. Device Endpoints
 @app.get("/api/devices")
@@ -186,7 +192,7 @@ async def list_devices():
 @app.post("/api/devices")
 async def create_device(payload: DeviceCreate):
     db = get_db()
-    now = datetime.now(timezone.utc)
+    now = get_vn_now()
     new_dev = payload.model_dump()
 
     # Tự động phát hiện số lượng kênh nếu chưa xác định hoặc = 0
@@ -359,7 +365,7 @@ async def sync_device_channels(device_id: str):
     # 3. Xóa các kênh cũ của thiết bị và tạo lại chính xác
     await db.channels.delete_many({"device_id": device_id})
 
-    now = datetime.now(timezone.utc)
+    now = get_vn_now()
     for ch_num in range(1, channel_count + 1):
         st = ch_status_map.get(ch_num, "unconnected")
         await db.channels.insert_one({
@@ -393,20 +399,26 @@ async def list_events(limit: int = Query(50, ge=1, le=200)):
 # 5. Monthly Reports Endpoints
 @app.get("/api/reports/monthly")
 async def get_monthly_report(
-    year: int = Query(default=datetime.now().year),
-    month: int = Query(default=datetime.now().month, ge=1, le=12)
+    year: int = Query(default=None),
+    month: int = Query(default=None)
 ):
     """Lấy dữ liệu tổng quan báo cáo theo tháng."""
-    return await ReportService.get_monthly_summary(year, month)
+    vn_now = get_vn_now()
+    y = year if year is not None else vn_now.year
+    m = month if month is not None else vn_now.month
+    return await ReportService.get_monthly_summary(y, m)
 
 @app.get("/api/reports/export-excel")
 async def export_monthly_report_excel(
-    year: int = Query(default=datetime.now().year),
-    month: int = Query(default=datetime.now().month, ge=1, le=12)
+    year: int = Query(default=None),
+    month: int = Query(default=None)
 ):
     """Xuất file Excel báo cáo tháng."""
-    excel_stream = await ReportService.export_excel_report(year, month)
-    filename = f"BaoCao_HoatDong_Camera_Thang_{month:02d}_{year}.xlsx"
+    vn_now = get_vn_now()
+    y = year if year is not None else vn_now.year
+    m = month if month is not None else vn_now.month
+    excel_stream = await ReportService.export_excel_report(y, m)
+    filename = f"BaoCao_HoatDong_Camera_Thang_{m:02d}_{y}.xlsx"
     return Response(
         content=excel_stream.read(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -443,7 +455,7 @@ async def update_email_settings(payload: EmailConfigSchema):
 @app.post("/api/settings/email/test")
 async def test_email_alert():
     """Gửi một email thử nghiệm để kiểm tra thông số SMTP và danh sách người nhận."""
-    now_str = datetime.now().strftime("%H:%M:%S ngày %d/%m/%Y")
+    now_str = get_vn_now().strftime("%H:%M:%S ngày %d/%m/%Y")
     html = EmailService.build_incident_html(
         "HỆ THỐNG THỬ NGHIỆM", 
         "Toàn bộ camera & đầu thu", 
@@ -457,13 +469,16 @@ async def test_email_alert():
 # 7. Hải Quan Daily Report & Data Retention Endpoints
 @app.get("/api/reports/export-haiquan-excel")
 async def export_haiquan_excel(
-    year: int = Query(default=datetime.now().year),
-    month: int = Query(default=datetime.now().month, ge=1, le=12),
+    year: int = Query(default=None),
+    month: int = Query(default=None),
     reporter: Optional[str] = Query(default="")
 ):
     """Xuất file Excel theo đúng biểu mẫu 'KIỂM TRA HOẠT ĐỘNG CỦA CAMERA HẢI QUAN' theo 31 ngày."""
-    excel_stream = await ReportService.export_haiquan_daily_excel(year, month, reporter)
-    filename = f"KiemTra_Camera_HaiQuan_Thang_{month:02d}_{year}.xlsx"
+    vn_now = get_vn_now()
+    y = year if year is not None else vn_now.year
+    m = month if month is not None else vn_now.month
+    excel_stream = await ReportService.export_haiquan_daily_excel(y, m, reporter)
+    filename = f"KiemTra_Camera_HaiQuan_Thang_{m:02d}_{y}.xlsx"
     return Response(
         content=excel_stream.read(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

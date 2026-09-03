@@ -23,10 +23,74 @@ import {
   Check,
   Download,
   Database,
-  Calendar
+  Calendar,
+  Search
 } from 'lucide-react';
 
 const API_BASE = '/api';
+
+// Helper định dạng ngày giờ chuẩn Việt Nam (UTC+7, bắt buộc DD/MM/YYYY)
+const formatDateTimeVN = (dateInput, includeSeconds = true) => {
+  if (!dateInput) return '-';
+  const d = new Date(dateInput);
+  if (isNaN(d.getTime())) return '-';
+
+  const formatter = new Intl.DateTimeFormat('vi-VN', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: includeSeconds ? '2-digit' : undefined,
+    hour12: false
+  });
+
+  const parts = formatter.formatToParts(d);
+  const map = {};
+  parts.forEach(p => (map[p.type] = p.value));
+
+  const timePart = includeSeconds 
+    ? `${map.hour || '00'}:${map.minute || '00'}:${map.second || '00'}`
+    : `${map.hour || '00'}:${map.minute || '00'}`;
+
+  return `${map.day}/${map.month}/${map.year} ${timePart}`;
+};
+
+const formatDateOnlyVN = (dateInput) => {
+  if (!dateInput) return '-';
+  const d = new Date(dateInput);
+  if (isNaN(d.getTime())) return '-';
+  const formatter = new Intl.DateTimeFormat('vi-VN', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  const parts = formatter.formatToParts(d);
+  const map = {};
+  parts.forEach(p => (map[p.type] = p.value));
+  return `${map.day}/${map.month}/${map.year}`;
+};
+
+const formatDurationVN = (seconds, startTime) => {
+  if (seconds !== null && seconds !== undefined) {
+    const m = Math.round(seconds / 60);
+    if (m < 60) return `${m} phút`;
+    const h = Math.floor(m / 60);
+    const remM = m % 60;
+    return `${h} giờ ${remM} phút`;
+  }
+  if (startTime) {
+    const diffSec = Math.max(0, Math.floor((Date.now() - new Date(startTime).getTime()) / 1000));
+    const m = Math.round(diffSec / 60);
+    if (m < 60) return `Đang tiếp diễn (${m} phút)`;
+    const h = Math.floor(m / 60);
+    const remM = m % 60;
+    return `Đang tiếp diễn (${h}h ${remM}p)`;
+  }
+  return 'Đang tiếp diễn';
+};
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('monitor'); // 'monitor' | 'reports' | 'events'
@@ -36,7 +100,12 @@ export default function App() {
   const [monthlyReport, setMonthlyReport] = useState(null);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
+  const [lastScanTime, setLastScanTime] = useState(new Date());
   const [locationFilter, setLocationFilter] = useState('all'); // 'all' | 'lan' | 'vpn' | 'issues'
+
+  // Event tab filter & search
+  const [eventFilterStatus, setEventFilterStatus] = useState('all'); // 'all' | 'unresolved' | 'resolved'
+  const [eventSearchText, setEventSearchText] = useState('');
 
   // Report filters
   const [reportYear, setReportYear] = useState(new Date().getFullYear());
@@ -90,7 +159,7 @@ export default function App() {
       const [devRes, chRes, evRes] = await Promise.all([
         fetch(`${API_BASE}/devices`),
         fetch(`${API_BASE}/channels`),
-        fetch(`${API_BASE}/events?limit=40`)
+        fetch(`${API_BASE}/events?limit=100`)
       ]);
       const devData = await devRes.json();
       const chData = await chRes.json();
@@ -99,6 +168,7 @@ export default function App() {
       setDevices(devData);
       setChannels(chData);
       setEvents(evData);
+      setLastScanTime(new Date());
     } catch (err) {
       console.error('Failed to load data:', err);
     } finally {
@@ -382,6 +452,23 @@ export default function App() {
     return true;
   });
 
+  // Event filtering & counters
+  const unresolvedEventsCount = events.filter(e => !e.resolved_at).length;
+  const resolvedEventsCount = events.filter(e => !!e.resolved_at).length;
+
+  const filteredEvents = events.filter(ev => {
+    if (eventFilterStatus === 'unresolved' && ev.resolved_at) return false;
+    if (eventFilterStatus === 'resolved' && !ev.resolved_at) return false;
+    if (eventSearchText.trim()) {
+      const q = eventSearchText.toLowerCase();
+      const targetMatch = (ev.target_name || '').toLowerCase().includes(q);
+      const noteMatch = (ev.note || '').toLowerCase().includes(q);
+      const eventTypeMatch = (ev.event || '').toLowerCase().includes(q);
+      if (!targetMatch && !noteMatch && !eventTypeMatch) return false;
+    }
+    return true;
+  });
+
   return (
     <div className="app-container">
       {/* HEADER */}
@@ -557,7 +644,7 @@ export default function App() {
             </div>
 
             <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-              Tự động cập nhật mỗi 30 giây
+              Tự động cập nhật mỗi 30s • Quét lúc: <span style={{ color: '#38bdf8', fontWeight: 600 }}>{formatDateTimeVN(lastScanTime)}</span> (Giờ VN +7)
             </div>
           </div>
 
@@ -586,6 +673,15 @@ export default function App() {
                           <span>{dev.location}</span>
                           <span>•</span>
                           <span>{dev.channel_count} Kênh</span>
+                          {dev.last_check && (
+                            <>
+                              <span>•</span>
+                              <span title="Thời điểm quét gần nhất" style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+                                <Clock size={11} style={{ display: 'inline', marginRight: 3 }} />
+                                {formatDateTimeVN(dev.last_check)}
+                              </span>
+                            </>
+                          )}
                           {dev.is_mock && (
                             <span style={{ color: '#f59e0b', fontSize: '0.75rem', border: '1px dashed #f59e0b', padding: '1px 6px', borderRadius: 4 }}>
                               Chế độ Demo/Mock
@@ -949,44 +1045,137 @@ export default function App() {
         </div>
       )}
 
-      {/* TAB 3: EVENTS LOG */}
+      {/* TAB 3: EVENTS LOG (BÁO CÁO & NHẬT KÝ SỰ CỐ CHI TIẾT) */}
       {activeTab === 'events' && (
         <div className="report-panel">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-            <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>Nhật Ký Cảnh Báo & Sự Cố Mất Tín Hiệu</h3>
-            <button className="btn btn-secondary btn-sm" onClick={fetchData}>
-              <RefreshCw size={14} /> Làm Mới
-            </button>
+          {/* Header & Thao tác */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: 12 }}>
+            <div>
+              <h3 style={{ fontSize: '1.2rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8, color: '#ffffff' }}>
+                <ShieldAlert size={22} color="#f87171" /> Nhật Ký & Báo Cáo Sự Cố Mất Tín Hiệu
+              </h3>
+              <p style={{ fontSize: '0.84rem', color: 'var(--text-secondary)', marginTop: 4 }}>
+                Thời gian ghi nhận chuẩn <strong>Múi giờ Việt Nam (UTC+7)</strong> định dạng <strong>DD/MM/YYYY HH:mm:ss</strong>.
+              </p>
+            </div>
+
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <button 
+                className="btn btn-secondary btn-sm" 
+                onClick={handleDownloadExcel}
+                title="Tải bảng tính Excel nhật ký sự cố & tỷ lệ SLA"
+              >
+                <Download size={14} /> Xuất Báo Cáo Excel
+              </button>
+              <button className="btn btn-secondary btn-sm" onClick={fetchData}>
+                <RefreshCw size={14} /> Làm Mới
+              </button>
+            </div>
           </div>
 
+          {/* Mini KPI Cards cho Sự Cố */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '14px', marginBottom: '20px' }}>
+            <div style={{ background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', padding: '14px 18px' }}>
+              <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Tổng Số Sự Cố Ghi Nhận</div>
+              <div style={{ fontSize: '1.5rem', fontWeight: 800, color: '#ffffff', marginTop: 4 }}>{events.length}</div>
+            </div>
+
+            <div style={{ background: unresolvedEventsCount > 0 ? 'rgba(239, 68, 68, 0.1)' : 'rgba(255, 255, 255, 0.03)', border: unresolvedEventsCount > 0 ? '1px solid rgba(239, 68, 68, 0.3)' : '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', padding: '14px 18px' }}>
+              <div style={{ fontSize: '0.8rem', color: unresolvedEventsCount > 0 ? '#f87171' : 'var(--text-secondary)' }}>Đang Gián Đoạn (Chưa Phục Hồi)</div>
+              <div style={{ fontSize: '1.5rem', fontWeight: 800, color: unresolvedEventsCount > 0 ? '#f87171' : '#34d399', marginTop: 4 }}>
+                {unresolvedEventsCount > 0 ? `⚠️ ${unresolvedEventsCount}` : '0'}
+              </div>
+            </div>
+
+            <div style={{ background: 'rgba(16, 185, 129, 0.08)', border: '1px solid rgba(16, 185, 129, 0.2)', borderRadius: 'var(--radius-md)', padding: '14px 18px' }}>
+              <div style={{ fontSize: '0.8rem', color: '#34d399' }}>Đã Khắc Phục / Phục Hồi Xong</div>
+              <div style={{ fontSize: '1.5rem', fontWeight: 800, color: '#34d399', marginTop: 4 }}>{resolvedEventsCount}</div>
+            </div>
+          </div>
+
+          {/* Bộ lọc & Tìm kiếm sự cố */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: 12 }}>
+            <div className="filter-group">
+              <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginRight: 4 }}>Trạng thái:</span>
+              <button 
+                className={`filter-chip ${eventFilterStatus === 'all' ? 'active' : ''}`}
+                onClick={() => setEventFilterStatus('all')}
+              >
+                Tất cả ({events.length})
+              </button>
+              <button 
+                className={`filter-chip ${eventFilterStatus === 'unresolved' ? 'active' : ''}`}
+                onClick={() => setEventFilterStatus('unresolved')}
+                style={{ borderColor: unresolvedEventsCount > 0 ? 'rgba(239, 68, 68, 0.4)' : '' }}
+              >
+                ⚠️ Đang gián đoạn ({unresolvedEventsCount})
+              </button>
+              <button 
+                className={`filter-chip ${eventFilterStatus === 'resolved' ? 'active' : ''}`}
+                onClick={() => setEventFilterStatus('resolved')}
+              >
+                ✓ Đã phục hồi ({resolvedEventsCount})
+              </button>
+            </div>
+
+            {/* Ô tìm kiếm nhanh sự cố */}
+            <div style={{ position: 'relative', minWidth: '240px' }}>
+              <Search size={15} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+              <input 
+                type="text"
+                className="form-input"
+                style={{ paddingLeft: '32px', fontSize: '0.84rem' }}
+                placeholder="Tìm camera, đầu thu, chi tiết..."
+                value={eventSearchText}
+                onChange={(e) => setEventSearchText(e.target.value)}
+              />
+              {eventSearchText && (
+                <button 
+                  onClick={() => setEventSearchText('')}
+                  style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+                >
+                  <X size={13} />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Bảng dữ liệu sự cố chi tiết */}
           <div className="table-responsive">
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Thời Điểm Ghi Nhận</th>
+                  <th style={{ minWidth: '170px' }}>Thời Điểm Ghi Nhận (DD/MM/YYYY)</th>
                   <th>Đối Tượng</th>
                   <th>Loại Sự Kiện</th>
-                  <th>Thời Điểm Phục Hồi</th>
+                  <th style={{ minWidth: '170px' }}>Thời Điểm Phục Hồi (DD/MM/YYYY)</th>
                   <th>Thời Lượng Gián Đoạn</th>
-                  <th>Chi Tiết</th>
+                  <th>Chi Tiết Sự Cố</th>
                 </tr>
               </thead>
               <tbody>
-                {events.length === 0 ? (
+                {filteredEvents.length === 0 ? (
                   <tr>
-                    <td colSpan={6} style={{ textAlign: 'center', padding: '32px', color: 'var(--text-muted)' }}>
-                      Chưa có sự cố mất tín hiệu nào được ghi nhận. Hệ thống đang hoạt động ổn định!
+                    <td colSpan={6} style={{ textAlign: 'center', padding: '36px', color: 'var(--text-muted)' }}>
+                      {events.length === 0 
+                        ? 'Chưa có sự cố mất tín hiệu nào được ghi nhận. Hệ thống camera đang hoạt động ổn định 24/7!'
+                        : 'Không có sự cố nào khớp với bộ lọc hoặc từ khóa tìm kiếm.'}
                     </td>
                   </tr>
                 ) : (
-                  events.map(ev => {
+                  filteredEvents.map(ev => {
                     const isResolved = !!ev.resolved_at;
                     return (
                       <tr key={ev.id}>
-                        <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.82rem' }}>
-                          {ev.timestamp ? new Date(ev.timestamp).toLocaleString('vi-VN') : '-'}
+                        {/* Thời điểm ghi nhận chuẩn DD/MM/YYYY HH:mm:ss */}
+                        <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', fontWeight: 600, color: '#e2e8f0' }}>
+                          {formatDateTimeVN(ev.timestamp)}
                         </td>
-                        <td style={{ fontWeight: 600 }}>{ev.target_name}</td>
+
+                        <td style={{ fontWeight: 600, color: '#ffffff' }}>
+                          {ev.target_name}
+                        </td>
+
                         <td>
                           <span className={`camera-status-badge ${ev.event === 'video_loss' || ev.event === 'offline' ? 'video-loss' : 'online'}`}>
                             {ev.event === 'video_loss' && 'Mất Tín Hiệu'}
@@ -995,19 +1184,24 @@ export default function App() {
                             {ev.event === 'online' && 'Đã Kết Nối Lại'}
                           </span>
                         </td>
-                        <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.82rem' }}>
-                          {isResolved ? new Date(ev.resolved_at).toLocaleString('vi-VN') : (
-                            <span style={{ color: '#f87171', fontWeight: 600 }}>Đang gián đoạn...</span>
-                          )}
-                        </td>
-                        <td>
-                          {ev.duration_seconds !== null && ev.duration_seconds !== undefined ? (
-                            `${Math.round(ev.duration_seconds / 60)} phút`
+
+                        {/* Thời điểm phục hồi chuẩn DD/MM/YYYY HH:mm:ss */}
+                        <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem' }}>
+                          {isResolved ? (
+                            <span style={{ color: '#34d399', fontWeight: 600 }}>{formatDateTimeVN(ev.resolved_at)}</span>
                           ) : (
-                            <span style={{ color: '#f87171' }}>Đang tiếp diễn</span>
+                            <span style={{ color: '#f87171', fontWeight: 700 }}>⚠️ Đang gián đoạn...</span>
                           )}
                         </td>
-                        <td style={{ color: 'var(--text-secondary)', fontSize: '0.82rem' }}>{ev.note}</td>
+
+                        {/* Thời lượng gián đoạn */}
+                        <td style={{ fontWeight: 600 }}>
+                          {formatDurationVN(ev.duration_seconds, ev.timestamp)}
+                        </td>
+
+                        <td style={{ color: 'var(--text-secondary)', fontSize: '0.83rem' }}>
+                          {ev.note}
+                        </td>
                       </tr>
                     );
                   })

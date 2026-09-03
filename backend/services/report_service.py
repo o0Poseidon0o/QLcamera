@@ -3,41 +3,44 @@ import calendar
 from datetime import datetime, timezone
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from database import get_db
+from database import get_db, get_vn_now, VN_TZ
 
-def normalize_dt(dt):
-    """Chuyển đổi datetime về dạng naive UTC đồng nhất để so sánh không bao giờ bị lỗi múi giờ."""
+def to_vn_dt(dt):
+    """Chuyển đổi datetime về múi giờ Việt Nam (UTC+7) chuẩn xác."""
     if dt is None:
         return None
     if getattr(dt, 'tzinfo', None) is not None:
-        return dt.astimezone(timezone.utc).replace(tzinfo=None)
-    return dt
+        return dt.astimezone(VN_TZ)
+    # Nếu là naive datetime (ví dụ bản ghi cũ lưu theo UTC):
+    return dt.replace(tzinfo=timezone.utc).astimezone(VN_TZ)
 
 class ReportService:
     @staticmethod
     async def get_monthly_summary(year: int, month: int):
-        """Tính toán số liệu báo cáo Uptime/Downtime trong tháng."""
+        """Tính toán số liệu báo cáo Uptime/Downtime trong tháng theo múi giờ Việt Nam (UTC+7)."""
         db = get_db()
         _, num_days = calendar.monthrange(year, month)
-        start_date = datetime(year, month, 1, 0, 0, 0)
-        end_date = datetime(year, month, num_days, 23, 59, 59)
-        start_utc = start_date.replace(tzinfo=timezone.utc)
-        end_utc = end_date.replace(tzinfo=timezone.utc)
+        start_vn = datetime(year, month, 1, 0, 0, 0, tzinfo=VN_TZ)
+        end_vn = datetime(year, month, num_days, 23, 59, 59, tzinfo=VN_TZ)
+        start_utc_naive = start_vn.astimezone(timezone.utc).replace(tzinfo=None)
+        end_utc_naive = end_vn.astimezone(timezone.utc).replace(tzinfo=None)
         total_month_seconds = num_days * 86400
 
         # Lấy tất cả thiết bị và kênh
         devices = await db.devices.find().to_list(100)
         channels = await db.channels.find().to_list(500)
 
-        # Lấy tất cả các sự cố trong tháng (hỗ trợ cả naive lẫn aware timestamp)
+        # Lấy tất cả các sự cố trong tháng (hỗ trợ cả aware VN_TZ lẫn naive UTC)
         events_cursor = db.events.find({
             "$or": [
-                {"timestamp": {"$gte": start_date, "$lte": end_date}},
-                {"timestamp": {"$gte": start_utc, "$lte": end_utc}}
+                {"timestamp": {"$gte": start_vn, "$lte": end_vn}},
+                {"timestamp": {"$gte": start_utc_naive, "$lte": end_utc_naive}}
             ],
             "event": {"$in": ["offline", "video_loss"]}
         })
-        events = await events_cursor.to_list(1000)
+        events = await events_cursor.to_list(2000)
+
+        now_vn = get_vn_now()
 
         # Thống kê cho từng đầu thu
         device_reports = []
@@ -52,10 +55,9 @@ class ReportService:
             for ev in dev_events:
                 dur = ev.get("duration_seconds")
                 if dur is None:
-                    now = datetime.now()
-                    ev_time = normalize_dt(ev.get("timestamp")) or start_date
-                    calc_end = min(now, end_date)
-                    dur = int((calc_end - ev_time).total_seconds())
+                    ev_time = to_vn_dt(ev.get("timestamp")) or start_vn
+                    calc_end = min(now_vn, end_vn)
+                    dur = max(0, int((calc_end - ev_time).total_seconds()))
                 downtime_sec += dur
 
             downtime_sec = min(downtime_sec, total_month_seconds)
@@ -90,10 +92,9 @@ class ReportService:
             for ev in ch_events:
                 dur = ev.get("duration_seconds")
                 if dur is None:
-                    now = datetime.now()
-                    ev_time = normalize_dt(ev.get("timestamp")) or start_date
-                    calc_end = min(now, end_date)
-                    dur = int((calc_end - ev_time).total_seconds())
+                    ev_time = to_vn_dt(ev.get("timestamp")) or start_vn
+                    calc_end = min(now_vn, end_vn)
+                    dur = max(0, int((calc_end - ev_time).total_seconds()))
                 downtime_sec += dur
 
             downtime_sec = min(downtime_sec, total_month_seconds)
@@ -133,8 +134,8 @@ class ReportService:
                     "id": str(e["_id"]),
                     "target_name": e.get("target_name"),
                     "event": e.get("event"),
-                    "timestamp": e.get("timestamp").isoformat() if e.get("timestamp") else None,
-                    "resolved_at": e.get("resolved_at").isoformat() if e.get("resolved_at") else None,
+                    "timestamp": to_vn_dt(e.get("timestamp")).isoformat() if e.get("timestamp") else None,
+                    "resolved_at": to_vn_dt(e.get("resolved_at")).isoformat() if e.get("resolved_at") else None,
                     "duration_seconds": e.get("duration_seconds"),
                     "note": e.get("note")
                 }
@@ -277,8 +278,25 @@ class ReportService:
         for idx, ev in enumerate(data["recent_events"], start=1):
             r = 3 + idx
             ws2.cell(row=r, column=1, value=idx).alignment = center_align
-            ws2.cell(row=r, column=2, value=ev.get("timestamp", "")[:19].replace("T", " ")).alignment = center_align
-            ws2.cell(row=r, column=3, value=ev.get("resolved_at", "Chưa giải quyết")[:19].replace("T", " ") if ev.get("resolved_at") else "Chưa phục hồi").alignment = center_align
+
+            ts_str = "-"
+            if ev.get("timestamp"):
+                try:
+                    dt_val = datetime.fromisoformat(ev["timestamp"])
+                    ts_str = dt_val.strftime("%d/%m/%Y %H:%M:%S")
+                except Exception:
+                    ts_str = ev["timestamp"][:19].replace("T", " ")
+
+            res_str = "Đang gián đoạn..."
+            if ev.get("resolved_at"):
+                try:
+                    dt_res = datetime.fromisoformat(ev["resolved_at"])
+                    res_str = dt_res.strftime("%d/%m/%Y %H:%M:%S")
+                except Exception:
+                    res_str = ev["resolved_at"][:19].replace("T", " ")
+
+            ws2.cell(row=r, column=2, value=ts_str).alignment = center_align
+            ws2.cell(row=r, column=3, value=res_str).alignment = center_align
             
             dur = ev.get("duration_seconds")
             dur_str = f"{round(dur/60, 1)} phút" if dur is not None else "Đang gián đoạn"
@@ -309,19 +327,19 @@ class ReportService:
         """
         db = get_db()
         _, num_days = calendar.monthrange(year, month)
-        start_month = datetime(year, month, 1, 0, 0, 0)
-        end_month = datetime(year, month, num_days, 23, 59, 59)
-        start_utc = start_month.replace(tzinfo=timezone.utc)
-        end_utc = end_month.replace(tzinfo=timezone.utc)
+        start_month = datetime(year, month, 1, 0, 0, 0, tzinfo=VN_TZ)
+        end_month = datetime(year, month, num_days, 23, 59, 59, tzinfo=VN_TZ)
+        start_utc_naive = start_month.astimezone(timezone.utc).replace(tzinfo=None)
+        end_utc_naive = end_month.astimezone(timezone.utc).replace(tzinfo=None)
 
         devices = await db.devices.find().sort("name", 1).to_list(100)
         channels = await db.channels.find().sort([("device_id", 1), ("channel_no", 1)]).to_list(500)
 
-        # Lấy tất cả sự cố trong tháng (hỗ trợ cả naive lẫn aware timestamp)
+        # Lấy tất cả sự cố trong tháng (hỗ trợ cả aware VN_TZ lẫn naive UTC)
         events_cursor = db.events.find({
             "$or": [
                 {"timestamp": {"$gte": start_month, "$lte": end_month}},
-                {"timestamp": {"$gte": start_utc, "$lte": end_utc}}
+                {"timestamp": {"$gte": start_utc_naive, "$lte": end_utc_naive}}
             ],
             "event": {"$in": ["offline", "video_loss"]}
         }).sort("timestamp", 1)
@@ -395,10 +413,10 @@ class ReportService:
             ev_id_str = str(ev["_id"])
             event_num_map[ev_id_str] = idx
 
-            t_start = normalize_dt(ev.get("timestamp"))
-            t_end = normalize_dt(ev.get("resolved_at"))
-            t_start_str = t_start.strftime("%H:%M ngày %d/%m") if t_start else "N/A"
-            t_end_str = t_end.strftime("%H:%M ngày %d/%m") if t_end else "Chưa phục hồi"
+            t_start = to_vn_dt(ev.get("timestamp"))
+            t_end = to_vn_dt(ev.get("resolved_at"))
+            t_start_str = t_start.strftime("%H:%M ngày %d/%m/%Y") if t_start else "N/A"
+            t_end_str = t_end.strftime("%H:%M ngày %d/%m/%Y") if t_end else "Đang khắc phục"
             target_desc = ev.get("target_name") or f"Kênh {ev.get('channel_no', '')}"
             note_text = ev.get("note") or f"Mất tín hiệu camera ({target_desc})"
             incident_notes.append(f'"{idx}" - "{t_start_str}" - "{t_end_str}" - "{note_text}"')
@@ -459,13 +477,13 @@ class ReportService:
                         c_day.fill = PatternFill(start_color="E5E7EB", end_color="E5E7EB", fill_type="solid")
                         continue
 
-                    day_start = datetime(year, month, day, 0, 0, 0)
-                    day_end = datetime(year, month, day, 23, 59, 59)
+                    day_start = datetime(year, month, day, 0, 0, 0, tzinfo=VN_TZ)
+                    day_end = datetime(year, month, day, 23, 59, 59, tzinfo=VN_TZ)
 
                     matching_events = []
                     for ev in ch_events:
-                        ev_start = normalize_dt(ev.get("timestamp"))
-                        ev_end = normalize_dt(ev.get("resolved_at")) or end_month
+                        ev_start = to_vn_dt(ev.get("timestamp"))
+                        ev_end = to_vn_dt(ev.get("resolved_at")) or end_month
                         if ev_start and ev_start <= day_end and ev_end >= day_start:
                             matching_events.append(ev)
 
@@ -549,11 +567,19 @@ class ReportService:
         """Xóa dữ liệu sự cố của một tháng sau khi đã chốt sổ và tải về máy."""
         db = get_db()
         _, num_days = calendar.monthrange(year, month)
-        start_date = datetime(year, month, 1, 0, 0, 0, tzinfo=timezone.utc)
-        end_date = datetime(year, month, num_days, 23, 59, 59, tzinfo=timezone.utc)
+        start_vn = datetime(year, month, 1, 0, 0, 0, tzinfo=VN_TZ)
+        end_vn = datetime(year, month, num_days, 23, 59, 59, tzinfo=VN_TZ)
+        start_utc = start_vn.astimezone(timezone.utc)
+        end_utc = end_vn.astimezone(timezone.utc)
+        start_utc_naive = start_utc.replace(tzinfo=None)
+        end_utc_naive = end_utc.replace(tzinfo=None)
 
         result = await db.events.delete_many({
-            "timestamp": {"$gte": start_date, "$lte": end_date}
+            "$or": [
+                {"timestamp": {"$gte": start_vn, "$lte": end_vn}},
+                {"timestamp": {"$gte": start_utc, "$lte": end_utc}},
+                {"timestamp": {"$gte": start_utc_naive, "$lte": end_utc_naive}}
+            ]
         })
         return {
             "success": True,
@@ -565,11 +591,19 @@ class ReportService:
     async def delete_yearly_events(year: int):
         """Xóa toàn bộ dữ liệu sự cố của cả năm."""
         db = get_db()
-        start_date = datetime(year, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
-        end_date = datetime(year, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+        start_vn = datetime(year, 1, 1, 0, 0, 0, tzinfo=VN_TZ)
+        end_vn = datetime(year, 12, 31, 23, 59, 59, tzinfo=VN_TZ)
+        start_utc = start_vn.astimezone(timezone.utc)
+        end_utc = end_vn.astimezone(timezone.utc)
+        start_utc_naive = start_utc.replace(tzinfo=None)
+        end_utc_naive = end_utc.replace(tzinfo=None)
 
         result = await db.events.delete_many({
-            "timestamp": {"$gte": start_date, "$lte": end_date}
+            "$or": [
+                {"timestamp": {"$gte": start_vn, "$lte": end_vn}},
+                {"timestamp": {"$gte": start_utc, "$lte": end_utc}},
+                {"timestamp": {"$gte": start_utc_naive, "$lte": end_utc_naive}}
+            ]
         })
         return {
             "success": True,

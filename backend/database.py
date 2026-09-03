@@ -1,6 +1,14 @@
+from datetime import datetime, timezone, timedelta
 from motor.motor_asyncio import AsyncIOMotorClient
 from config import settings
 import logging
+
+# Múi giờ Việt Nam (UTC+7)
+VN_TZ = timezone(timedelta(hours=7))
+
+def get_vn_now() -> datetime:
+    """Trả về thời gian hiện tại chuẩn múi giờ Việt Nam (UTC+7)."""
+    return datetime.now(VN_TZ)
 
 logger = logging.getLogger("camera_manager.db")
 
@@ -12,8 +20,8 @@ db_instance = Database()
 
 async def connect_to_mongo():
     try:
-        logger.info(f"Connecting to MongoDB Atlas...")
-        db_instance.client = AsyncIOMotorClient(settings.mongodb_uri)
+        logger.info(f"Connecting to MongoDB Atlas (Timezone: UTC+7 Asia/Ho_Chi_Minh)...")
+        db_instance.client = AsyncIOMotorClient(settings.mongodb_uri, tz_aware=True, tzinfo=VN_TZ)
         db_instance.db = db_instance.client[settings.database_name]
         # Quick ping
         await db_instance.client.admin.command('ping')
