@@ -24,8 +24,7 @@ services:
     container_name: camera_frontend
     restart: always
     ports:
-      - "80:80"       # Truy cập trực tiếp qua IP máy chủ: http://<ip_linux>
-      - "5173:80"     # Hoặc qua cổng quen thuộc: http://<ip_linux>:5173
+      - "91:80"       # Truy cập trực tiếp qua: http://<ip_linux>:91
     depends_on:
       - backend
     environment:

@@ -92,10 +92,9 @@ Mỗi lần bạn sửa xong tính năng hoặc giao diện trên máy tính, qu
 
 Sau khi container khởi động xong, bạn mở trình duyệt bất kỳ và truy cập:
 
-* **Cổng mặc định:** `http://<IP_MAY_CHU_LINUX>`
-* **Hoặc cổng 5173:** `http://<IP_MAY_CHU_LINUX>:5173`
+* **Cổng truy cập ứng dụng:** `http://<IP_MAY_CHU_LINUX>:91`
 
-*(Ví dụ: `http://192.168.1.100` hoặc `http://10.10.7.10`)*
+*(Ví dụ: `http://192.168.1.100:91` hoặc `http://10.10.7.10:91`)*
 
 ---
 
@@ -113,10 +112,9 @@ Sau khi container khởi động xong, bạn mở trình duyệt bất kỳ và 
 ---
 
 ## 🔒 7. Lưu Ý Về Tường Lửa (Firewall)
-Nếu máy chủ Linux có bật tường lửa (`ufw`), bạn hãy mở các cổng cần thiết:
+Nếu máy chủ Linux có bật tường lửa (`ufw`), bạn hãy mở cổng 91:
 ```bash
-sudo ufw allow 80/tcp
-sudo ufw allow 5173/tcp
+sudo ufw allow 91/tcp
 sudo ufw reload
 ```
 Đồng thời, đảm bảo máy chủ Linux có thể ping / kết nối đến dải IP của đầu thu (`10.10.7.x` và `192.168.5.x` qua VPN) để hệ thống lấy dữ liệu camera liên tục.
