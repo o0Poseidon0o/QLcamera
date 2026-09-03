@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  # 1. Dịch vụ Backend (FastAPI + Python + Quét Camera & Gửi Mail)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: camera_backend
+    restart: always
+    environment:
+      - MONGODB_URI=${MONGODB_URI:-mongodb+srv://lenhan16587_db_user:g3ib5kVSL42WNfON@quanlycamera.uh2fyhm.mongodb.net/?retryWrites=true&w=majority&appName=quanlycamera}
+      - DATABASE_NAME=${DATABASE_NAME:-quanlycamera}
+      - SCAN_INTERVAL_SECONDS=${SCAN_INTERVAL_SECONDS:-60}
+      - TZ=Asia/Ho_Chi_Minh
+    networks:
+      - camera_network
+
+  # 2. Dịch vụ Frontend (React + Nginx Web Server & Reverse Proxy)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: camera_frontend
+    restart: always
+    ports:
+      - "80:80"       # Truy cập trực tiếp qua IP máy chủ: http://<ip_linux>
+      - "5173:80"     # Hoặc qua cổng quen thuộc: http://<ip_linux>:5173
+    depends_on:
+      - backend
+    environment:
+      - TZ=Asia/Ho_Chi_Minh
+    networks:
+      - camera_network
+
+networks:
+  camera_network:
+    driver: bridge
