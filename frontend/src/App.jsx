@@ -26,7 +26,13 @@ import {
   Calendar,
   Search,
   Wrench,
-  FileEdit
+  FileEdit,
+  Lock,
+  Unlock,
+  User,
+  Key,
+  LogOut,
+  ShieldCheck
 } from 'lucide-react';
 
 const API_BASE = '/api';
@@ -95,7 +101,120 @@ const formatDurationVN = (seconds, startTime) => {
 };
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('monitor'); // 'monitor' | 'reports' | 'events'
+  const [activeTab, setActiveTab] = useState('monitor'); // 'monitor' | 'reports' | 'events' | 'email'
+
+  // Authentication State
+  const [authToken, setAuthToken] = useState(() => localStorage.getItem('camera_auth_token') || '');
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      const stored = localStorage.getItem('camera_user');
+      return stored ? JSON.parse(stored) : null;
+    } catch (e) {
+      return null;
+    }
+  });
+  const isLoggedIn = !!authToken && currentUser?.role === 'admin';
+
+  // Auth Modals & Forms State
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+  const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
+  const [loginForm, setLoginForm] = useState({ username: 'admin', password: '' });
+  const [loginError, setLoginError] = useState('');
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [passwordForm, setPasswordForm] = useState({ old_password: '', new_password: '', confirm_password: '' });
+  const [passwordError, setPasswordError] = useState('');
+  const [passwordSuccess, setPasswordSuccess] = useState('');
+  const [passwordLoading, setPasswordLoading] = useState(false);
+
+  // Authenticated fetch wrapper (adds Bearer token and handles 401)
+  const authFetch = async (url, options = {}) => {
+    const headers = { ...(options.headers || {}) };
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    const response = await fetch(url, { ...options, headers });
+    if (response.status === 401) {
+      if (authToken) {
+        handleLogout();
+        alert('Phiên làm việc Quản trị viên đã hết hạn hoặc không có quyền. Vui lòng đăng nhập lại.');
+        setIsLoginModalOpen(true);
+      }
+    }
+    return response;
+  };
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoginLoading(true);
+    setLoginError('');
+    try {
+      const res = await fetch(`${API_BASE}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(loginForm)
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Tên đăng nhập hoặc mật khẩu không chính xác');
+      }
+      setAuthToken(data.access_token);
+      setCurrentUser(data.user);
+      localStorage.setItem('camera_auth_token', data.access_token);
+      localStorage.setItem('camera_user', JSON.stringify(data.user));
+      setIsLoginModalOpen(false);
+      setLoginForm({ username: 'admin', password: '' });
+    } catch (err) {
+      setLoginError(err.message);
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    setAuthToken('');
+    setCurrentUser(null);
+    localStorage.removeItem('camera_auth_token');
+    localStorage.removeItem('camera_user');
+  };
+
+  const handleChangePassword = async (e) => {
+    e.preventDefault();
+    setPasswordError('');
+    setPasswordSuccess('');
+    if (passwordForm.new_password !== passwordForm.confirm_password) {
+      setPasswordError('Mật khẩu xác nhận không khớp');
+      return;
+    }
+    if (passwordForm.new_password.length < 6) {
+      setPasswordError('Mật khẩu mới phải có ít nhất 6 ký tự');
+      return;
+    }
+    setPasswordLoading(true);
+    try {
+      const res = await authFetch(`${API_BASE}/auth/change-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          old_password: passwordForm.old_password,
+          new_password: passwordForm.new_password
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Không thể đổi mật khẩu');
+      }
+      setPasswordSuccess('Đổi mật khẩu thành công!');
+      setTimeout(() => {
+        setIsPasswordModalOpen(false);
+        setPasswordForm({ old_password: '', new_password: '', confirm_password: '' });
+        setPasswordSuccess('');
+      }, 1200);
+    } catch (err) {
+      setPasswordError(err.message);
+    } finally {
+      setPasswordLoading(false);
+    }
+  };
   const [devices, setDevices] = useState([]);
   const [channels, setChannels] = useState([]);
   const [events, setEvents] = useState([]);
@@ -212,7 +331,7 @@ export default function App() {
   const handleScanNow = async () => {
     try {
       setScanning(true);
-      await fetch(`${API_BASE}/monitor/scan-now`, { method: 'POST' });
+      await authFetch(`${API_BASE}/monitor/scan-now`, { method: 'POST' });
       await fetchData();
       if (activeTab === 'reports') {
         await fetchReport();
@@ -227,7 +346,7 @@ export default function App() {
   // Quick toggle simulation for test loss
   const handleToggleSimulation = async (channelId) => {
     try {
-      await fetch(`${API_BASE}/channels/${channelId}/toggle-simulation`, { method: 'POST' });
+      await authFetch(`${API_BASE}/channels/${channelId}/toggle-simulation`, { method: 'POST' });
       await fetchData();
       if (activeTab === 'reports') {
         await fetchReport();
@@ -240,7 +359,7 @@ export default function App() {
   // Toggle enable/disable tracking for a channel slot
   const handleToggleEnable = async (channelId) => {
     try {
-      await fetch(`${API_BASE}/channels/${channelId}/toggle-enable`, { method: 'POST' });
+      await authFetch(`${API_BASE}/channels/${channelId}/toggle-enable`, { method: 'POST' });
       await fetchData();
     } catch (err) {
       console.error('Toggle enable error:', err);
@@ -250,7 +369,7 @@ export default function App() {
   // Toggle maintenance mode for a channel
   const handleToggleMaintenance = async (channelId, channelName) => {
     try {
-      const res = await fetch(`${API_BASE}/channels/${channelId}/toggle-maintenance`, { method: 'POST' });
+      const res = await authFetch(`${API_BASE}/channels/${channelId}/toggle-maintenance`, { method: 'POST' });
       const data = await res.json();
       alert(data.message || `Đã cập nhật trạng thái bảo trì cho ${channelName}`);
       await fetchData();
@@ -262,7 +381,7 @@ export default function App() {
   // Toggle maintenance mode for a device (NVR)
   const handleToggleDeviceMaintenance = async (deviceId, deviceName) => {
     try {
-      const res = await fetch(`${API_BASE}/devices/${deviceId}/toggle-maintenance`, { method: 'POST' });
+      const res = await authFetch(`${API_BASE}/devices/${deviceId}/toggle-maintenance`, { method: 'POST' });
       const data = await res.json();
       alert(data.message || `Đã cập nhật trạng thái bảo trì cho đầu thu ${deviceName}`);
       await fetchData();
@@ -283,7 +402,7 @@ export default function App() {
     if (!editingEvent) return;
     try {
       setNoteSaving(true);
-      const res = await fetch(`${API_BASE}/events/${editingEvent.id}/note`, {
+      const res = await authFetch(`${API_BASE}/events/${editingEvent.id}/note`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ note: noteText })
@@ -292,7 +411,8 @@ export default function App() {
         setEditingEvent(null);
         await fetchData();
       } else {
-        alert('Không thể lưu ghi chú sự cố');
+        const errData = await res.json().catch(() => ({}));
+        alert(errData.detail || 'Không thể lưu ghi chú sự cố');
       }
     } catch (err) {
       alert(`Lỗi lưu ghi chú: ${err.message}`);
@@ -305,7 +425,7 @@ export default function App() {
   const handleSyncChannels = async (deviceId, devName) => {
     try {
       setScanning(true);
-      const res = await fetch(`${API_BASE}/devices/${deviceId}/sync-channels`, { method: 'POST' });
+      const res = await authFetch(`${API_BASE}/devices/${deviceId}/sync-channels`, { method: 'POST' });
       const data = await res.json();
       alert(data.message || `Đã đồng bộ lại kênh từ đầu thu ${devName}`);
       await fetchData();
@@ -320,7 +440,7 @@ export default function App() {
   const handleDeleteDevice = async (id, name) => {
     if (!window.confirm(`Bạn có chắc chắn muốn xóa đầu thu "${name}" không?`)) return;
     try {
-      await fetch(`${API_BASE}/devices/${id}`, { method: 'DELETE' });
+      await authFetch(`${API_BASE}/devices/${id}`, { method: 'DELETE' });
       await fetchData();
     } catch (err) {
       console.error('Delete error:', err);
@@ -363,7 +483,7 @@ export default function App() {
     try {
       setTestingConnection(true);
       setTestResult(null);
-      const res = await fetch(`${API_BASE}/devices/test-connect`, {
+      const res = await authFetch(`${API_BASE}/devices/test-connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -393,12 +513,15 @@ export default function App() {
     e.preventDefault();
     try {
       setEmailSaveStatus('saving');
-      const res = await fetch(`${API_BASE}/settings/email`, {
+      const res = await authFetch(`${API_BASE}/settings/email`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(emailConfig)
       });
       const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Lỗi lưu cấu hình email');
+      }
       setEmailSaveStatus('success');
       setTimeout(() => setEmailSaveStatus(null), 3000);
     } catch (err) {
@@ -411,7 +534,7 @@ export default function App() {
     try {
       setEmailTesting(true);
       setEmailTestResult(null);
-      const res = await fetch(`${API_BASE}/settings/email/test`, { method: 'POST' });
+      const res = await authFetch(`${API_BASE}/settings/email/test`, { method: 'POST' });
       const data = await res.json();
       setEmailTestResult(data);
     } catch (err) {
@@ -426,13 +549,13 @@ export default function App() {
     e.preventDefault();
     try {
       if (editingDevice) {
-        await fetch(`${API_BASE}/devices/${editingDevice.id}`, {
+        await authFetch(`${API_BASE}/devices/${editingDevice.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(formData)
         });
       } else {
-        await fetch(`${API_BASE}/devices`, {
+        await authFetch(`${API_BASE}/devices`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(formData)
@@ -477,7 +600,7 @@ export default function App() {
 
     try {
       setCleaningStatus(`deleting-${year}-${month}`);
-      const res = await fetch(`${API_BASE}/data/cleanup-month?year=${year}&month=${month}`, { method: 'DELETE' });
+      const res = await authFetch(`${API_BASE}/data/cleanup-month?year=${year}&month=${month}`, { method: 'DELETE' });
       const data = await res.json();
       alert(data.message || 'Đã xóa dữ liệu thành công!');
       await fetchRetentionStats();
@@ -546,19 +669,69 @@ export default function App() {
         </div>
 
         <div className="header-actions">
-          <button 
-            className="btn btn-secondary" 
-            onClick={handleScanNow}
-            disabled={scanning}
-          >
-            <RefreshCw size={16} className={scanning ? 'spin' : ''} />
-            {scanning ? 'Đang Quét...' : 'Quét Ngay'}
-          </button>
-          
-          <button className="btn btn-primary" onClick={() => openModal()}>
-            <Plus size={16} />
-            Thêm Đầu Thu
-          </button>
+          {isLoggedIn ? (
+            <>
+              <div className="auth-badge admin">
+                <ShieldCheck size={14} />
+                <span>Admin: {currentUser?.username || 'admin'}</span>
+              </div>
+              
+              <button 
+                className="btn btn-secondary btn-sm"
+                onClick={() => {
+                  setPasswordError('');
+                  setPasswordSuccess('');
+                  setPasswordForm({ old_password: '', new_password: '', confirm_password: '' });
+                  setIsPasswordModalOpen(true);
+                }}
+                title="Đổi mật khẩu tài khoản Quản trị viên"
+              >
+                <Key size={14} /> Đổi Mật Khẩu
+              </button>
+
+              <button 
+                className="btn btn-secondary btn-sm" 
+                onClick={handleScanNow}
+                disabled={scanning}
+                title="Quét trạng thái toàn bộ hệ thống ngay lập tức"
+              >
+                <RefreshCw size={14} className={scanning ? 'spin' : ''} />
+                {scanning ? 'Đang Quét...' : 'Quét Ngay'}
+              </button>
+              
+              <button className="btn btn-primary btn-sm" onClick={() => openModal()} title="Thêm đầu thu NVR Dahua mới">
+                <Plus size={14} />
+                Thêm Đầu Thu
+              </button>
+
+              <button 
+                className="btn btn-danger-outline btn-sm"
+                onClick={handleLogout}
+                title="Đăng xuất quyền Quản trị"
+              >
+                <LogOut size={14} /> Đăng Xuất
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="auth-badge guest" title="Bạn đang ở chế độ xem thông tin và xuất báo cáo. Cần đăng nhập để quản trị thiết bị.">
+                <User size={14} />
+                <span>Chế độ Xem (Khách)</span>
+              </div>
+
+              <button 
+                className="btn btn-primary"
+                onClick={() => {
+                  setLoginError('');
+                  setLoginForm({ username: 'admin', password: '' });
+                  setIsLoginModalOpen(true);
+                }}
+                title="Đăng nhập tài khoản Quản trị viên để chỉnh sửa thiết bị và cấu hình"
+              >
+                <Lock size={15} /> Đăng Nhập Quản Trị
+              </button>
+            </>
+          )}
         </div>
       </header>
 
@@ -762,30 +935,34 @@ export default function App() {
                         </span>
                       )}
 
-                      {/* Nút Bảo Trì cho cả Đầu thu NVR */}
-                      <button 
-                        className={`btn-maint ${dev.status === 'maintenance' ? 'active' : ''}`}
-                        onClick={() => handleToggleDeviceMaintenance(dev.id, dev.name)}
-                        title={dev.status === 'maintenance' ? "Kết thúc bảo trì đầu thu, tiếp tục giám sát" : "Chuyển toàn bộ đầu thu sang Chế độ Bảo trì (tạm ngưng tính SLA)"}
-                      >
-                        <Wrench size={13} /> {dev.status === 'maintenance' ? "Xong bảo trì NVR" : "Bảo trì NVR"}
-                      </button>
+                      {/* Các nút hành động quản lý chỉ hiển thị khi đã đăng nhập Admin */}
+                      {isLoggedIn && (
+                        <>
+                          <button 
+                            className={`btn-maint ${dev.status === 'maintenance' ? 'active' : ''}`}
+                            onClick={() => handleToggleDeviceMaintenance(dev.id, dev.name)}
+                            title={dev.status === 'maintenance' ? "Kết thúc bảo trì đầu thu, tiếp tục giám sát" : "Chuyển toàn bộ đầu thu sang Chế độ Bảo trì (tạm ngưng tính SLA)"}
+                          >
+                            <Wrench size={13} /> {dev.status === 'maintenance' ? "Xong bảo trì NVR" : "Bảo trì NVR"}
+                          </button>
 
-                      <button 
-                        className="btn btn-secondary btn-sm" 
-                        onClick={() => handleSyncChannels(dev.id, dev.name)}
-                        title="Gọi API lấy lại danh sách và trạng thái camera thật từ đầu thu Dahua"
-                      >
-                        <RefreshCw size={13} /> Đồng Bộ Kênh
-                      </button>
+                          <button 
+                            className="btn btn-secondary btn-sm" 
+                            onClick={() => handleSyncChannels(dev.id, dev.name)}
+                            title="Gọi API lấy lại danh sách và trạng thái camera thật từ đầu thu Dahua"
+                          >
+                            <RefreshCw size={13} /> Đồng Bộ Kênh
+                          </button>
 
-                      <button className="btn btn-secondary btn-sm" onClick={() => openModal(dev)}>
-                        <Edit3 size={13} /> Sửa
-                      </button>
+                          <button className="btn btn-secondary btn-sm" onClick={() => openModal(dev)}>
+                            <Edit3 size={13} /> Sửa
+                          </button>
 
-                      <button className="btn btn-danger-outline btn-sm" onClick={() => handleDeleteDevice(dev.id, dev.name)}>
-                        <Trash2 size={13} /> Xóa
-                      </button>
+                          <button className="btn btn-danger-outline btn-sm" onClick={() => handleDeleteDevice(dev.id, dev.name)}>
+                            <Trash2 size={13} /> Xóa
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
 
@@ -832,37 +1009,39 @@ export default function App() {
                               {isLoss ? 'Cần kiểm tra dây/nguồn' : isMaint ? 'Tạm ngưng tính SLA' : isOnline ? 'Đang ghi hình' : 'Kênh trống / Tắt'}
                             </span>
                             
-                            <div style={{ display: 'flex', gap: 6 }}>
-                              {/* Nút Chế độ Bảo trì (Tạm ngưng tính lỗi SLA) - Nổi bật & Rõ ràng */}
-                              <button 
-                                className={`btn-maint ${isMaint ? 'active' : ''}`}
-                                title={isMaint ? "Kết thúc bảo trì, tiếp tục giám sát kênh này" : "Tạm ngưng giám sát (Chế độ bảo trì, chờ sửa chữa)"}
-                                onClick={() => handleToggleMaintenance(ch.id, ch.name)}
-                              >
-                                <Wrench size={12} />
-                                {isMaint ? "Xong bảo trì" : "Bảo trì"}
-                              </button>
+                            {isLoggedIn && (
+                              <div style={{ display: 'flex', gap: 6 }}>
+                                {/* Nút Chế độ Bảo trì (Tạm ngưng tính lỗi SLA) - Nổi bật & Rõ ràng */}
+                                <button 
+                                  className={`btn-maint ${isMaint ? 'active' : ''}`}
+                                  title={isMaint ? "Kết thúc bảo trì, tiếp tục giám sát kênh này" : "Tạm ngưng giám sát (Chế độ bảo trì, chờ sửa chữa)"}
+                                  onClick={() => handleToggleMaintenance(ch.id, ch.name)}
+                                >
+                                  <Wrench size={12} />
+                                  {isMaint ? "Xong bảo trì" : "Bảo trì"}
+                                </button>
 
-                              {/* Nút bật / tắt theo dõi kênh trống */}
-                              <button 
-                                className="sim-btn"
-                                title={isUnconn ? "Bật theo dõi kênh này" : "Bỏ qua / Kênh này không cắm camera"}
-                                onClick={() => handleToggleEnable(ch.id)}
-                              >
-                                {isUnconn ? "Bật" : "Bỏ qua"}
-                              </button>
-
-                              {/* Nút giả lập sự cố nếu là chế độ mock */}
-                              {dev.is_mock && (
+                                {/* Nút bật / tắt theo dõi kênh trống */}
                                 <button 
                                   className="sim-btn"
-                                  title="Thử nghiệm giả lập mất tín hiệu / phục hồi"
-                                  onClick={() => handleToggleSimulation(ch.id)}
+                                  title={isUnconn ? "Bật theo dõi kênh này" : "Bỏ qua / Kênh này không cắm camera"}
+                                  onClick={() => handleToggleEnable(ch.id)}
                                 >
-                                  {isLoss ? '↺' : '⚡'}
+                                  {isUnconn ? "Bật" : "Bỏ qua"}
                                 </button>
-                              )}
-                            </div>
+
+                                {/* Nút giả lập sự cố nếu là chế độ mock */}
+                                {dev.is_mock && (
+                                  <button 
+                                    className="sim-btn"
+                                    title="Thử nghiệm giả lập mất tín hiệu / phục hồi"
+                                    onClick={() => handleToggleSimulation(ch.id)}
+                                  >
+                                    {isLoss ? '↺' : '⚡'}
+                                  </button>
+                                )}
+                              </div>
+                            )}
                           </div>
                         </div>
                       );
@@ -1111,15 +1290,17 @@ export default function App() {
                                   <Download size={13} /> Tải Báo Cáo Hải Quan
                                 </button>
 
-                                <button 
-                                  className="btn btn-danger btn-sm"
-                                  disabled={cleaningStatus === `deleting-${item.year}-${item.month}`}
-                                  onClick={() => handleDeleteMonthData(item.year, item.month)}
-                                  title="Xóa toàn bộ sự cố tháng này để giải phóng dung lượng"
-                                >
-                                  <Trash2 size={13} /> 
-                                  {cleaningStatus === `deleting-${item.year}-${item.month}` ? 'Đang xóa...' : 'Xóa Dữ Liệu Tháng Này'}
-                                </button>
+                                {isLoggedIn && (
+                                  <button 
+                                    className="btn btn-danger btn-sm"
+                                    disabled={cleaningStatus === `deleting-${item.year}-${item.month}`}
+                                    onClick={() => handleDeleteMonthData(item.year, item.month)}
+                                    title="Xóa toàn bộ sự cố tháng này để giải phóng dung lượng"
+                                  >
+                                    <Trash2 size={13} /> 
+                                    {cleaningStatus === `deleting-${item.year}-${item.month}` ? 'Đang xóa...' : 'Xóa Dữ Liệu Tháng Này'}
+                                  </button>
+                                )}
                               </div>
                             </td>
                           </tr>
@@ -1294,60 +1475,64 @@ export default function App() {
                         </td>
 
                         <td style={{ textAlign: 'center' }}>
-                          <div style={{ display: 'flex', gap: 6, justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap' }}>
-                            <button
-                              className="btn btn-secondary btn-sm"
-                              style={{ padding: '4px 8px', fontSize: '0.78rem' }}
-                              title="Nhập lý do sự cố / tiến độ khắc phục (sẽ xuất ra file Excel Hải quan)"
-                              onClick={() => openNoteModal(ev)}
-                            >
-                              <FileEdit size={12} style={{ display: 'inline', marginRight: 3 }} />
-                              Ghi chú lý do
-                            </button>
+                          {isLoggedIn ? (
+                            <div style={{ display: 'flex', gap: 6, justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap' }}>
+                              <button
+                                className="btn btn-secondary btn-sm"
+                                style={{ padding: '4px 8px', fontSize: '0.78rem' }}
+                                title="Nhập lý do sự cố / tiến độ khắc phục (sẽ xuất ra file Excel Hải quan)"
+                                onClick={() => openNoteModal(ev)}
+                              >
+                                <FileEdit size={12} style={{ display: 'inline', marginRight: 3 }} />
+                                Ghi chú lý do
+                              </button>
 
-                            {/* Nút Chuyển Bảo Trì trực tiếp từ bảng sự cố */}
-                            {(() => {
-                              if (ev.target_type === 'channel') {
-                                const relatedChannel = channels.find(c => 
-                                  String(c.id) === String(ev.target_id) || 
-                                  (String(c.device_id) === String(ev.device_id) && Number(c.channel_no) === Number(ev.channel_no))
-                                );
-                                if (!relatedChannel) return null;
-                                const isChMaint = relatedChannel.status === 'maintenance';
-                                return (
-                                  <button
-                                    className={`btn-maint ${isChMaint ? 'active' : ''}`}
-                                    style={{ padding: '4px 8px', fontSize: '0.78rem' }}
-                                    title={isChMaint 
-                                      ? `Kênh ${ev.target_name} đang ở chế độ bảo trì. Bấm để kết thúc bảo trì.` 
-                                      : `Chuyển ngay ${ev.target_name} sang chế độ bảo trì (dừng cảnh báo và ngưng tính lỗi SLA).`}
-                                    onClick={() => handleToggleMaintenance(relatedChannel.id, ev.target_name)}
-                                  >
-                                    <Wrench size={12} />
-                                    {isChMaint ? 'Xong bảo trì' : 'Chuyển bảo trì'}
-                                  </button>
-                                );
-                              } else if (ev.target_type === 'device') {
-                                const devItem = devices.find(d => String(d.id) === String(ev.target_id) || String(d.id) === String(ev.device_id));
-                                if (!devItem) return null;
-                                const isDevMaint = devItem.status === 'maintenance';
-                                return (
-                                  <button
-                                    className={`btn-maint ${isDevMaint ? 'active' : ''}`}
-                                    style={{ padding: '4px 8px', fontSize: '0.78rem' }}
-                                    title={isDevMaint 
-                                      ? `Đầu thu ${ev.target_name} đang bảo trì. Bấm để kết thúc.` 
-                                      : `Chuyển đầu thu ${ev.target_name} sang chế độ bảo trì.`}
-                                    onClick={() => handleToggleDeviceMaintenance(devItem.id, ev.target_name)}
-                                  >
-                                    <Wrench size={12} />
-                                    {isDevMaint ? 'Xong bảo trì' : 'Chuyển bảo trì'}
-                                  </button>
-                                );
-                              }
-                              return null;
-                            })()}
-                          </div>
+                              {/* Nút Chuyển Bảo Trì trực tiếp từ bảng sự cố */}
+                              {(() => {
+                                if (ev.target_type === 'channel') {
+                                  const relatedChannel = channels.find(c => 
+                                    String(c.id) === String(ev.target_id) || 
+                                    (String(c.device_id) === String(ev.device_id) && Number(c.channel_no) === Number(ev.channel_no))
+                                  );
+                                  if (!relatedChannel) return null;
+                                  const isChMaint = relatedChannel.status === 'maintenance';
+                                  return (
+                                    <button
+                                      className={`btn-maint ${isChMaint ? 'active' : ''}`}
+                                      style={{ padding: '4px 8px', fontSize: '0.78rem' }}
+                                      title={isChMaint 
+                                        ? `Kênh ${ev.target_name} đang ở chế độ bảo trì. Bấm để kết thúc bảo trì.` 
+                                        : `Chuyển ngay ${ev.target_name} sang chế độ bảo trì (dừng cảnh báo và ngưng tính lỗi SLA).`}
+                                      onClick={() => handleToggleMaintenance(relatedChannel.id, ev.target_name)}
+                                    >
+                                      <Wrench size={12} />
+                                      {isChMaint ? 'Xong bảo trì' : 'Chuyển bảo trì'}
+                                    </button>
+                                  );
+                                } else if (ev.target_type === 'device') {
+                                  const devItem = devices.find(d => String(d.id) === String(ev.target_id) || String(d.id) === String(ev.device_id));
+                                  if (!devItem) return null;
+                                  const isDevMaint = devItem.status === 'maintenance';
+                                  return (
+                                    <button
+                                      className={`btn-maint ${isDevMaint ? 'active' : ''}`}
+                                      style={{ padding: '4px 8px', fontSize: '0.78rem' }}
+                                      title={isDevMaint 
+                                        ? `Đầu thu ${ev.target_name} đang bảo trì. Bấm để kết thúc.` 
+                                        : `Chuyển đầu thu ${ev.target_name} sang chế độ bảo trì.`}
+                                      onClick={() => handleToggleDeviceMaintenance(devItem.id, ev.target_name)}
+                                    >
+                                      <Wrench size={12} />
+                                      {isDevMaint ? 'Xong bảo trì' : 'Chuyển bảo trì'}
+                                    </button>
+                                  );
+                                }
+                                return null;
+                              })()}
+                            </div>
+                          ) : (
+                            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Chỉ xem</span>
+                          )}
                         </td>
                       </tr>
                     );
@@ -1362,6 +1547,29 @@ export default function App() {
       {/* TAB 4: EMAIL SETTINGS */}
       {activeTab === 'email' && (
         <div className="report-panel" style={{ maxWidth: '820px', margin: '0 auto' }}>
+          {/* Lock Notice if not logged in */}
+          {!isLoggedIn && (
+            <div className="auth-lock-notice">
+              <div className="notice-content">
+                <Lock size={20} color="#60a5fa" />
+                <div>
+                  <div className="notice-title">Chế độ xem thông tin cấu hình Email</div>
+                  <div className="notice-desc">Bạn đang ở quyền Khách (Guest). Cần đăng nhập Quản trị viên để cập nhật cài đặt SMTP hoặc gửi email thử nghiệm.</div>
+                </div>
+              </div>
+              <button 
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={() => {
+                  setLoginError('');
+                  setIsLoginModalOpen(true);
+                }}
+              >
+                <Lock size={13} /> Đăng Nhập Quản Trị
+              </button>
+            </div>
+          )}
+
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '16px', flexWrap: 'wrap', gap: 12 }}>
             <div>
               <h3 style={{ fontSize: '1.2rem', fontWeight: 700, color: '#ffffff', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1379,7 +1587,8 @@ export default function App() {
               <input 
                 type="checkbox" 
                 id="email-enable-toggle"
-                style={{ width: 18, height: 18, cursor: 'pointer' }}
+                disabled={!isLoggedIn}
+                style={{ width: 18, height: 18, cursor: isLoggedIn ? 'pointer' : 'not-allowed' }}
                 checked={emailConfig.enabled}
                 onChange={(e) => setEmailConfig({ ...emailConfig, enabled: e.target.checked })}
               />
@@ -1396,6 +1605,7 @@ export default function App() {
                     className="form-input" 
                     placeholder="Ví dụ: smtp.gmail.com hoặc smtp.office365.com" 
                     required 
+                    disabled={!isLoggedIn}
                     value={emailConfig.smtp_host}
                     onChange={(e) => setEmailConfig({ ...emailConfig, smtp_host: e.target.value })}
                   />
@@ -1407,6 +1617,7 @@ export default function App() {
                     className="form-input" 
                     placeholder="587 (TLS) hoặc 465 (SSL)" 
                     required 
+                    disabled={!isLoggedIn}
                     value={emailConfig.smtp_port}
                     onChange={(e) => setEmailConfig({ ...emailConfig, smtp_port: Number(e.target.value) })}
                   />
@@ -1421,6 +1632,7 @@ export default function App() {
                     className="form-input" 
                     placeholder="cameranotify@gmail.com" 
                     required 
+                    disabled={!isLoggedIn}
                     value={emailConfig.smtp_user}
                     onChange={(e) => setEmailConfig({ ...emailConfig, smtp_user: e.target.value, sender_email: e.target.value })}
                   />
@@ -1430,7 +1642,8 @@ export default function App() {
                   <input 
                     type="password" 
                     className="form-input" 
-                    placeholder="Mật khẩu ứng dụng 16 ký tự" 
+                    placeholder={isLoggedIn ? "Mật khẩu ứng dụng 16 ký tự" : "••••••••••••••••"}
+                    disabled={!isLoggedIn}
                     value={emailConfig.smtp_password}
                     onChange={(e) => setEmailConfig({ ...emailConfig, smtp_password: e.target.value })}
                   />
@@ -1447,6 +1660,7 @@ export default function App() {
                   rows={3} 
                   placeholder="admin@company.com, kythuat@gmail.com, giamsat@company.com"
                   required
+                  disabled={!isLoggedIn}
                   value={emailConfig.recipient_emails}
                   onChange={(e) => setEmailConfig({ ...emailConfig, recipient_emails: e.target.value })}
                   style={{ resize: 'vertical', lineHeight: 1.6 }}
@@ -1461,7 +1675,7 @@ export default function App() {
                   type="button" 
                   className="btn btn-secondary"
                   onClick={handleTestEmailAlert}
-                  disabled={emailTesting || !emailConfig.smtp_host || !emailConfig.smtp_user}
+                  disabled={!isLoggedIn || emailTesting || !emailConfig.smtp_host || !emailConfig.smtp_user}
                   title="Gửi 1 email thử nghiệm để kiểm tra cấu hình SMTP"
                 >
                   <Send size={15} className={emailTesting ? 'spin' : ''} />
@@ -1479,10 +1693,12 @@ export default function App() {
                       Lỗi khi lưu cấu hình!
                     </span>
                   )}
-                  <button type="submit" className="btn btn-primary" disabled={emailSaveStatus === 'saving'}>
-                    <Save size={16} />
-                    {emailSaveStatus === 'saving' ? 'Đang lưu...' : 'Lưu Cấu Hình'}
-                  </button>
+                  {isLoggedIn && (
+                    <button type="submit" className="btn btn-primary" disabled={emailSaveStatus === 'saving'}>
+                      <Save size={16} />
+                      {emailSaveStatus === 'saving' ? 'Đang lưu...' : 'Lưu Cấu Hình'}
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -1729,6 +1945,155 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* MODAL ĐĂNG NHẬP QUẢN TRỊ VIÊN */}
+      {isLoginModalOpen && (
+        <div className="modal-backdrop" onClick={() => setIsLoginModalOpen(false)}>
+          <div className="modal-dialog" style={{ maxWidth: '420px' }} onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Lock size={20} color="#3b82f6" /> Đăng Nhập Quản Trị Viên
+              </h3>
+              <button className="close-btn" onClick={() => setIsLoginModalOpen(false)}>
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleLogin}>
+              <div className="modal-body">
+                <p style={{ fontSize: '0.84rem', color: 'var(--text-secondary)', marginBottom: 4 }}>
+                  Vui lòng đăng nhập tài khoản Quản trị để quản lý thiết bị, cấu hình bảo trì và hệ thống.
+                </p>
+
+                {loginError && (
+                  <div className="auth-alert-error">
+                    <AlertTriangle size={16} />
+                    <span>{loginError}</span>
+                  </div>
+                )}
+
+                <div className="form-group">
+                  <label>Tên Đăng Nhập *</label>
+                  <input 
+                    type="text" 
+                    className="form-input" 
+                    placeholder="admin" 
+                    required 
+                    autoFocus
+                    value={loginForm.username}
+                    onChange={(e) => setLoginForm({ ...loginForm, username: e.target.value })}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Mật Khẩu *</label>
+                  <input 
+                    type="password" 
+                    className="form-input" 
+                    placeholder="Mật khẩu quản trị" 
+                    required 
+                    value={loginForm.password}
+                    onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
+                  />
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    Mật khẩu khởi tạo ban đầu: <code>admin123</code>
+                  </span>
+                </div>
+              </div>
+
+              <div className="modal-footer">
+                <button type="button" className="btn btn-secondary" onClick={() => setIsLoginModalOpen(false)}>
+                  Hủy Bỏ
+                </button>
+                <button type="submit" className="btn btn-primary" disabled={loginLoading}>
+                  {loginLoading ? 'Đang xác thực...' : 'Đăng Nhập'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL ĐỔI MẬT KHẨU QUẢN TRỊ VIÊN */}
+      {isPasswordModalOpen && (
+        <div className="modal-backdrop" onClick={() => setIsPasswordModalOpen(false)}>
+          <div className="modal-dialog" style={{ maxWidth: '420px' }} onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Key size={20} color="#f59e0b" /> Đổi Mật Khẩu Quản Trị
+              </h3>
+              <button className="close-btn" onClick={() => setIsPasswordModalOpen(false)}>
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleChangePassword}>
+              <div className="modal-body">
+                {passwordError && (
+                  <div className="auth-alert-error">
+                    <AlertTriangle size={16} />
+                    <span>{passwordError}</span>
+                  </div>
+                )}
+
+                {passwordSuccess && (
+                  <div className="auth-alert-success">
+                    <CheckCircle2 size={16} />
+                    <span>{passwordSuccess}</span>
+                  </div>
+                )}
+
+                <div className="form-group">
+                  <label>Mật Khẩu Hiện Tại *</label>
+                  <input 
+                    type="password" 
+                    className="form-input" 
+                    placeholder="Nhập mật khẩu cũ" 
+                    required 
+                    autoFocus
+                    value={passwordForm.old_password}
+                    onChange={(e) => setPasswordForm({ ...passwordForm, old_password: e.target.value })}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Mật Khẩu Mới (Tối thiểu 6 ký tự) *</label>
+                  <input 
+                    type="password" 
+                    className="form-input" 
+                    placeholder="Nhập mật khẩu mới" 
+                    required 
+                    value={passwordForm.new_password}
+                    onChange={(e) => setPasswordForm({ ...passwordForm, new_password: e.target.value })}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Xác Nhận Mật Khẩu Mới *</label>
+                  <input 
+                    type="password" 
+                    className="form-input" 
+                    placeholder="Nhập lại mật khẩu mới" 
+                    required 
+                    value={passwordForm.confirm_password}
+                    onChange={(e) => setPasswordForm({ ...passwordForm, confirm_password: e.target.value })}
+                  />
+                </div>
+              </div>
+
+              <div className="modal-footer">
+                <button type="button" className="btn btn-secondary" onClick={() => setIsPasswordModalOpen(false)}>
+                  Đóng
+                </button>
+                <button type="submit" className="btn btn-primary" disabled={passwordLoading}>
+                  {passwordLoading ? 'Đang lưu...' : 'Cập Nhật Mật Khẩu'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+

@@ -4,7 +4,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import List, Optional
 from bson import ObjectId
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import FastAPI, HTTPException, Query, Response, Depends, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -14,6 +15,7 @@ from services.dahua_service import DahuaService
 from services.monitor_service import MonitorService
 from services.report_service import ReportService
 from services.email_service import EmailService
+from services.auth_service import AuthService
 
 # Configure logging
 logging.basicConfig(
@@ -23,6 +25,14 @@ logging.basicConfig(
 logger = logging.getLogger("camera_manager.api")
 
 # Pydantic Schemas
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
+
 class EmailConfigSchema(BaseModel):
     enabled: bool = False
     smtp_host: str = Field("smtp.gmail.com", example="smtp.gmail.com")
@@ -32,6 +42,25 @@ class EmailConfigSchema(BaseModel):
     sender_email: str = Field("", example="your_email@gmail.com")
     recipient_emails: str = Field("", example="admin@gmail.com, it@gmail.com")
     use_tls: bool = True
+
+# Security Scheme & Dependency
+security = HTTPBearer(auto_error=False)
+
+async def get_current_admin(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)):
+    if not credentials or not credentials.credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Chức năng này yêu cầu đăng nhập tài khoản Quản trị viên (Admin)",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    payload = AuthService.verify_token(credentials.credentials)
+    if not payload or payload.get("role") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Phiên đăng nhập đã hết hạn hoặc không có quyền Quản trị viên",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    return payload
 class DeviceCreate(BaseModel):
     name: str = Field(..., example="Đầu thu NVR Kho Nội Bộ")
     ip: str = Field(..., example="192.168.1.100")
@@ -71,6 +100,9 @@ class EventNoteUpdate(BaseModel):
 async def lifespan(app: FastAPI):
     await connect_to_mongo()
     db = get_db()
+
+    # Khởi tạo tài khoản Quản trị viên (Admin) mặc định nếu chưa có
+    await AuthService.init_admin_user()
 
     # Seed 4 đầu thu ban đầu (3 Nội bộ, 1 Tỉnh qua VPN) nếu DB trống
     device_count = await db.devices.count_documents({})
@@ -184,6 +216,46 @@ def serialize_doc(doc):
 async def health_check():
     return {"status": "ok", "time": get_vn_now().isoformat(), "timezone": "UTC+7"}
 
+# --- AUTHENTICATION ROUTES ---
+@app.post("/api/auth/login")
+async def login(payload: LoginRequest):
+    """Đăng nhập Quản trị viên (Admin) để lấy Token xác thực."""
+    user = await AuthService.authenticate(payload.username.strip(), payload.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Tên đăng nhập hoặc mật khẩu không chính xác"
+        )
+    token = AuthService.create_token(user["username"], user.get("role", "admin"))
+    return {
+        "success": True,
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "username": user["username"],
+            "role": user.get("role", "admin"),
+            "display_name": user.get("display_name", "Quản Trị Viên")
+        }
+    }
+
+@app.get("/api/auth/me")
+async def get_current_user(current_admin: dict = Depends(get_current_admin)):
+    """Kiểm tra token và lấy thông tin người dùng hiện tại."""
+    return {
+        "username": current_admin.get("sub"),
+        "role": current_admin.get("role"),
+        "is_admin": True
+    }
+
+@app.post("/api/auth/change-password")
+async def change_password(payload: ChangePasswordRequest, current_admin: dict = Depends(get_current_admin)):
+    """Đổi mật khẩu tài khoản quản trị viên."""
+    username = current_admin.get("sub")
+    success, msg = await AuthService.change_password(username, payload.old_password, payload.new_password)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+    return {"success": True, "message": msg}
+
 # 1. Device Endpoints
 @app.get("/api/devices")
 async def list_devices():
@@ -193,7 +265,7 @@ async def list_devices():
     return [serialize_doc(d) for d in devices]
 
 @app.post("/api/devices")
-async def create_device(payload: DeviceCreate):
+async def create_device(payload: DeviceCreate, current_admin: dict = Depends(get_current_admin)):
     db = get_db()
     now = get_vn_now()
     new_dev = payload.model_dump()
@@ -218,7 +290,7 @@ async def create_device(payload: DeviceCreate):
     return serialize_doc(new_dev)
 
 @app.put("/api/devices/{device_id}")
-async def update_device(device_id: str, payload: DeviceUpdate):
+async def update_device(device_id: str, payload: DeviceUpdate, current_admin: dict = Depends(get_current_admin)):
     db = get_db()
     if not ObjectId.is_valid(device_id):
         raise HTTPException(status_code=400, detail="Invalid Device ID")
@@ -237,7 +309,7 @@ async def update_device(device_id: str, payload: DeviceUpdate):
     return serialize_doc(updated)
 
 @app.delete("/api/devices/{device_id}")
-async def delete_device(device_id: str):
+async def delete_device(device_id: str, current_admin: dict = Depends(get_current_admin)):
     db = get_db()
     if not ObjectId.is_valid(device_id):
         raise HTTPException(status_code=400, detail="Invalid Device ID")
@@ -248,7 +320,7 @@ async def delete_device(device_id: str):
     return {"success": True, "message": "Đã xóa đầu thu và các dữ liệu liên quan"}
 
 @app.post("/api/devices/test-connect")
-async def test_dahua_connection(payload: TestConnectionRequest):
+async def test_dahua_connection(payload: TestConnectionRequest, current_admin: dict = Depends(get_current_admin)):
     """Kiểm tra trực tiếp thông số kết nối tới đầu thu Dahua."""
     result = await DahuaService.test_connection(
         ip=payload.ip,
@@ -271,7 +343,7 @@ async def list_channels(device_id: Optional[str] = None):
     return [serialize_doc(c) for c in channels]
 
 @app.put("/api/channels/{channel_id}")
-async def update_channel(channel_id: str, payload: ChannelUpdate):
+async def update_channel(channel_id: str, payload: ChannelUpdate, current_admin: dict = Depends(get_current_admin)):
     db = get_db()
     if not ObjectId.is_valid(channel_id):
         raise HTTPException(status_code=400, detail="Invalid Channel ID")
@@ -287,7 +359,7 @@ async def update_channel(channel_id: str, payload: ChannelUpdate):
     return serialize_doc(updated)
 
 @app.post("/api/channels/{channel_id}/toggle-simulation")
-async def toggle_mock_channel_loss(channel_id: str):
+async def toggle_mock_channel_loss(channel_id: str, current_admin: dict = Depends(get_current_admin)):
     """Nút bấm nhanh để giả lập mất tín hiệu / phục hồi camera (dùng kiểm thử hệ thống)."""
     db = get_db()
     if not ObjectId.is_valid(channel_id):
@@ -318,7 +390,7 @@ async def toggle_mock_channel_loss(channel_id: str):
     return {"success": True, "message": f"Đã giả lập {action} cho Camera số {ch_num}"}
 
 @app.post("/api/channels/{channel_id}/toggle-enable")
-async def toggle_channel_enable(channel_id: str):
+async def toggle_channel_enable(channel_id: str, current_admin: dict = Depends(get_current_admin)):
     """Bật hoặc tắt theo dõi kênh camera (ví dụ kênh chưa lắp camera hoặc bỏ qua không giám sát)."""
     db = get_db()
     if not ObjectId.is_valid(channel_id):
@@ -340,7 +412,7 @@ async def toggle_channel_enable(channel_id: str):
     return {"success": True, "enabled": new_enabled, "message": "Đã cập nhật trạng thái theo dõi kênh"}
 
 @app.post("/api/devices/{device_id}/sync-channels")
-async def sync_device_channels(device_id: str):
+async def sync_device_channels(device_id: str, current_admin: dict = Depends(get_current_admin)):
     """Đồng bộ lại toàn bộ danh sách tên và trạng thái camera từ đầu thu Dahua thực tế."""
     db = get_db()
     if not ObjectId.is_valid(device_id):
@@ -386,13 +458,13 @@ async def sync_device_channels(device_id: str):
 
 # 3. Monitor Control Endpoints
 @app.post("/api/monitor/scan-now")
-async def trigger_scan():
+async def trigger_scan(current_admin: dict = Depends(get_current_admin)):
     """Kích hoạt quét toàn bộ hệ thống ngay lập tức."""
     await MonitorService.run_single_scan()
     return {"success": True, "message": "Đã hoàn thành quét hệ thống"}
 
 @app.post("/api/channels/{channel_id}/toggle-maintenance")
-async def toggle_channel_maintenance(channel_id: str):
+async def toggle_channel_maintenance(channel_id: str, current_admin: dict = Depends(get_current_admin)):
     """Chuyển đổi trạng thái Bảo Trì cho kênh camera (không tính downtime, không cảnh báo)."""
     db = get_db()
     if not ObjectId.is_valid(channel_id):
@@ -445,7 +517,7 @@ async def toggle_channel_maintenance(channel_id: str):
     return {"success": True, "status": new_status, "is_maintenance": not is_maintenance, "message": msg}
 
 @app.post("/api/devices/{device_id}/toggle-maintenance")
-async def toggle_device_maintenance(device_id: str):
+async def toggle_device_maintenance(device_id: str, current_admin: dict = Depends(get_current_admin)):
     """Chuyển đổi trạng thái Bảo Trì cho toàn bộ Đầu Thu NVR (tạm ngưng tính downtime)."""
     db = get_db()
     if not ObjectId.is_valid(device_id):
@@ -501,7 +573,7 @@ async def list_events(limit: int = Query(100, ge=1, le=500)):
     return [serialize_doc(e) for e in events]
 
 @app.put("/api/events/{event_id}/note")
-async def update_event_note(event_id: str, payload: EventNoteUpdate):
+async def update_event_note(event_id: str, payload: EventNoteUpdate, current_admin: dict = Depends(get_current_admin)):
     """Cập nhật tiến độ / lý do giải trình sự cố trực tiếp (sẽ xuất ra file Excel Hải quan)."""
     db = get_db()
     if not ObjectId.is_valid(event_id):
@@ -567,14 +639,14 @@ async def get_email_settings():
     return cfg
 
 @app.post("/api/settings/email")
-async def update_email_settings(payload: EmailConfigSchema):
+async def update_email_settings(payload: EmailConfigSchema, current_admin: dict = Depends(get_current_admin)):
     """Lưu cấu hình gửi email cảnh báo."""
     data = payload.model_dump()
     await EmailService.save_email_config(data)
     return {"success": True, "message": "Đã lưu cấu hình email cảnh báo thành công!"}
 
 @app.post("/api/settings/email/test")
-async def test_email_alert():
+async def test_email_alert(current_admin: dict = Depends(get_current_admin)):
     """Gửi một email thử nghiệm để kiểm tra thông số SMTP và danh sách người nhận."""
     now_str = get_vn_now().strftime("%H:%M:%S ngày %d/%m/%Y")
     html = EmailService.build_incident_html(
@@ -614,14 +686,16 @@ async def get_retention_stats():
 @app.delete("/api/data/cleanup-month")
 async def cleanup_month_data(
     year: int = Query(..., ge=2020, le=2050),
-    month: int = Query(..., ge=1, le=12)
+    month: int = Query(..., ge=1, le=12),
+    current_admin: dict = Depends(get_current_admin)
 ):
     """Xóa dữ liệu sự cố của một tháng sau khi người dùng đã chốt sổ."""
     return await ReportService.delete_monthly_events(year, month)
 
 @app.delete("/api/data/cleanup-year")
 async def cleanup_year_data(
-    year: int = Query(..., ge=2020, le=2050)
+    year: int = Query(..., ge=2020, le=2050),
+    current_admin: dict = Depends(get_current_admin)
 ):
     """Xóa toàn bộ dữ liệu sự cố của cả năm."""
     return await ReportService.delete_yearly_events(year)
