@@ -320,7 +320,7 @@ export default function App() {
   useEffect(() => {
     if (activeTab === 'reports') {
       fetchReport();
-      fetchRetentionStats();
+      fetchRetentionStats(reportYear);
     }
     if (activeTab === 'email') {
       fetchEmailConfig();
@@ -572,9 +572,10 @@ export default function App() {
   const [retentionStats, setRetentionStats] = useState([]);
   const [cleaningStatus, setCleaningStatus] = useState(null);
 
-  const fetchRetentionStats = async () => {
+  const fetchRetentionStats = async (year = reportYear) => {
     try {
-      const res = await fetch(`${API_BASE}/data/retention-stats`);
+      const url = year ? `${API_BASE}/data/retention-stats?year=${year}` : `${API_BASE}/data/retention-stats`;
+      const res = await fetch(url);
       const data = await res.json();
       setRetentionStats(data);
     } catch (err) {
@@ -583,8 +584,8 @@ export default function App() {
   };
 
   // Download Excel Report (SLA & Downtime tổng quan)
-  const handleDownloadExcel = () => {
-    window.open(`${API_BASE}/reports/export-excel?year=${reportYear}&month=${reportMonth}`, '_blank');
+  const handleDownloadExcel = (year = reportYear, month = reportMonth) => {
+    window.open(`${API_BASE}/reports/export-excel?year=${year}&month=${month}`, '_blank');
   };
 
   // Download Biểu Mẫu Hải Quan (31 Ngày theo đúng mẫu chuẩn)
@@ -1236,15 +1237,17 @@ export default function App() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: 10 }}>
                   <div>
                     <h3 style={{ fontSize: '1.05rem', fontWeight: 700, color: '#ffffff', display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <Database size={18} color="#38bdf8" /> Quản Lý Lưu Trữ & Chốt Sổ Báo Cáo (Tối Ưu 500MB Atlas)
+                      <Database size={18} color="#38bdf8" /> Danh Sách Báo Cáo Từng Tháng & Quản Lý Lưu Trữ
                     </h3>
                     <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginTop: 4 }}>
-                      Sau khi kết thúc tháng, bạn tải file báo cáo Hải Quan về máy lưu trữ nội bộ và bấm <strong>"Xóa Dữ Liệu Tháng Này"</strong> để làm sạch database, dung lượng MongoDB Atlas sẽ không bao giờ bị đầy!
+                      Mọi tháng trong năm (kể cả tháng không có sự cố, hoạt động 100%) đều có sẵn <strong>File Excel Báo Cáo Hải Quan & SLA</strong> để tải về máy. Với các tháng có sự cố, Quản trị viên có thể bấm <strong>"Xóa Dữ Liệu Sự Cố"</strong> sau khi tải file để giải phóng bộ nhớ MongoDB Atlas.
                     </p>
                   </div>
-                  <button className="btn btn-secondary btn-sm" onClick={fetchRetentionStats}>
-                    <RefreshCw size={13} /> Làm Mới
-                  </button>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <button className="btn btn-secondary btn-sm" onClick={() => fetchRetentionStats(reportYear)}>
+                      <RefreshCw size={13} /> Làm Mới
+                    </button>
+                  </div>
                 </div>
 
                 <div className="table-responsive">
@@ -1252,16 +1255,16 @@ export default function App() {
                     <thead>
                       <tr>
                         <th>Kỳ Báo Cáo</th>
-                        <th>Số Lượng Bản Ghi Sự Cố</th>
-                        <th>Trạng Thái Phục Hồi</th>
-                        <th>Thao Tác Chốt Sổ & Giải Phóng Bộ Nhớ</th>
+                        <th>Tình Trạng Vận Hành</th>
+                        <th>Ghi Nhận Sự Cố & Phục Hồi</th>
+                        <th>Tải File Báo Cáo & Chốt Sổ Bộ Nhớ</th>
                       </tr>
                     </thead>
                     <tbody>
                       {retentionStats.length === 0 ? (
                         <tr>
                           <td colSpan={4} style={{ textAlign: 'center', padding: '24px', color: 'var(--text-muted)' }}>
-                            Chưa có dữ liệu sự cố nào trong cơ sở dữ liệu. Bộ nhớ đang ở mức tối ưu 100%!
+                            Đang tải danh sách kỳ báo cáo...
                           </td>
                         </tr>
                       ) : (
@@ -1271,26 +1274,72 @@ export default function App() {
                               Tháng {item.month < 10 ? `0${item.month}` : item.month}/{item.year}
                             </td>
                             <td>
-                              <span style={{ fontWeight: 600, color: item.total_events > 0 ? '#f87171' : '#34d399' }}>
-                                {item.total_events} sự cố được ghi nhận
-                              </span>
+                              {item.total_events === 0 ? (
+                                <span style={{ 
+                                  display: 'inline-flex', 
+                                  alignItems: 'center', 
+                                  gap: 6, 
+                                  color: '#34d399', 
+                                  background: 'rgba(52, 211, 153, 0.12)', 
+                                  border: '1px solid rgba(52, 211, 153, 0.25)', 
+                                  padding: '3px 10px', 
+                                  borderRadius: 12, 
+                                  fontSize: '0.82rem',
+                                  fontWeight: 600
+                                }}>
+                                  ✓ 100% Hoạt động tốt (0 sự cố)
+                                </span>
+                              ) : (
+                                <span style={{ 
+                                  display: 'inline-flex', 
+                                  alignItems: 'center', 
+                                  gap: 6, 
+                                  color: '#f87171', 
+                                  background: 'rgba(248, 113, 113, 0.12)', 
+                                  border: '1px solid rgba(248, 113, 113, 0.25)', 
+                                  padding: '3px 10px', 
+                                  borderRadius: 12, 
+                                  fontSize: '0.82rem',
+                                  fontWeight: 600
+                                }}>
+                                  ⚠️ {item.total_events} sự cố gián đoạn
+                                </span>
+                              )}
                             </td>
                             <td>
-                              <span style={{ color: '#34d399', fontSize: '0.82rem' }}>
-                                ✓ Đã phục hồi: {item.resolved_events}/{item.total_events}
-                              </span>
+                              {item.total_events === 0 ? (
+                                <span style={{ color: 'var(--text-secondary)', fontSize: '0.82rem' }}>
+                                  Hoạt động liên tục 24/7 (Không có sự cố)
+                                </span>
+                              ) : (
+                                <span style={{ 
+                                  color: item.resolved_events === item.total_events ? '#34d399' : '#fbbf24', 
+                                  fontSize: '0.82rem', 
+                                  fontWeight: 600 
+                                }}>
+                                  {item.resolved_events === item.total_events ? '✓' : '⚠️'} Đã phục hồi: {item.resolved_events}/{item.total_events}
+                                </span>
+                              )}
                             </td>
                             <td>
-                              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                                 <button 
                                   className="btn btn-secondary btn-sm"
                                   onClick={() => handleDownloadHaiQuanExcel(item.year, item.month)}
-                                  title="Tải biểu mẫu Hải Quan của tháng này về máy"
+                                  title={`Tải báo cáo Hải Quan 31 ngày Tháng ${item.month}/${item.year} (.xlsx)`}
                                 >
-                                  <Download size={13} /> Tải Báo Cáo Hải Quan
+                                  <FileSpreadsheet size={13} color="#10b981" /> Tải Báo Cáo Hải Quan
                                 </button>
 
-                                {isLoggedIn && (
+                                <button 
+                                  className="btn btn-secondary btn-sm"
+                                  onClick={() => handleDownloadExcel(item.year, item.month)}
+                                  title={`Tải báo cáo SLA Tháng ${item.month}/${item.year} (.xlsx)`}
+                                >
+                                  <Download size={13} color="#38bdf8" /> Tải Báo Cáo SLA
+                                </button>
+
+                                {item.total_events > 0 && isLoggedIn && (
                                   <button 
                                     className="btn btn-danger btn-sm"
                                     disabled={cleaningStatus === `deleting-${item.year}-${item.month}`}
@@ -1298,8 +1347,14 @@ export default function App() {
                                     title="Xóa toàn bộ sự cố tháng này để giải phóng dung lượng"
                                   >
                                     <Trash2 size={13} /> 
-                                    {cleaningStatus === `deleting-${item.year}-${item.month}` ? 'Đang xóa...' : 'Xóa Dữ Liệu Tháng Này'}
+                                    {cleaningStatus === `deleting-${item.year}-${item.month}` ? 'Đang xóa...' : 'Xóa Dữ Liệu Sự Cố'}
                                   </button>
+                                )}
+
+                                {item.total_events === 0 && (
+                                  <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem', fontStyle: 'italic', paddingLeft: 4 }}>
+                                    ✓ Dữ liệu sạch
+                                  </span>
                                 )}
                               </div>
                             </td>

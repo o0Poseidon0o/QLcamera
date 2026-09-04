@@ -679,9 +679,9 @@ async def export_haiquan_excel(
     )
 
 @app.get("/api/data/retention-stats")
-async def get_retention_stats():
-    """Lấy danh sách các tháng có dữ liệu sự cố để người dùng quản lý chốt sổ và xóa."""
-    return await ReportService.get_data_retention_stats()
+async def get_retention_stats(year: Optional[int] = Query(None, ge=2020, le=2050)):
+    """Lấy danh sách các tháng và thống kê sự cố (kể cả tháng 0 sự cố) để người dùng quản lý chốt sổ và tải báo cáo."""
+    return await ReportService.get_data_retention_stats(year)
 
 @app.delete("/api/data/cleanup-month")
 async def cleanup_month_data(

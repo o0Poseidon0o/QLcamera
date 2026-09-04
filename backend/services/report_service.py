@@ -1,6 +1,7 @@
 import io
 import calendar
 from datetime import datetime, timezone
+from typing import Optional, List
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from database import get_db, get_vn_now, VN_TZ
@@ -290,38 +291,47 @@ class ReportService:
             c.border = thin_border
         ws2.row_dimensions[3].height = 24
 
-        for idx, ev in enumerate(data["recent_events"], start=1):
-            r = 3 + idx
-            ws2.cell(row=r, column=1, value=idx).alignment = center_align
-
-            ts_str = "-"
-            if ev.get("timestamp"):
-                try:
-                    dt_val = datetime.fromisoformat(ev["timestamp"])
-                    ts_str = dt_val.strftime("%d/%m/%Y %H:%M:%S")
-                except Exception:
-                    ts_str = ev["timestamp"][:19].replace("T", " ")
-
-            res_str = "Đang gián đoạn..."
-            if ev.get("resolved_at"):
-                try:
-                    dt_res = datetime.fromisoformat(ev["resolved_at"])
-                    res_str = dt_res.strftime("%d/%m/%Y %H:%M:%S")
-                except Exception:
-                    res_str = ev["resolved_at"][:19].replace("T", " ")
-
-            ws2.cell(row=r, column=2, value=ts_str).alignment = center_align
-            ws2.cell(row=r, column=3, value=res_str).alignment = center_align
-            
-            dur = ev.get("duration_seconds")
-            dur_str = f"{round(dur/60, 1)} phút" if dur is not None else "Đang gián đoạn"
-            ws2.cell(row=r, column=4, value=dur_str).alignment = center_align
-            ws2.cell(row=r, column=5, value=ev.get("target_name", "")).alignment = left_align
-            ws2.cell(row=r, column=6, value=ev.get("note", "")).alignment = left_align
-
+        if not data["recent_events"]:
+            ws2.merge_cells("A4:F4")
+            c_empty = ws2.cell(row=4, column=1, value="Hệ thống camera hoạt động liên tục 24/7 trong tháng, không phát sinh sự cố nào.")
+            c_empty.alignment = center_align
+            c_empty.font = Font(name="Arial", size=10, italic=True, color="059669")
+            ws2.row_dimensions[4].height = 24
             for c_idx in range(1, 7):
-                ws2.cell(row=r, column=c_idx).border = thin_border
-                ws2.cell(row=r, column=c_idx).font = normal_font
+                ws2.cell(row=4, column=c_idx).border = thin_border
+        else:
+            for idx, ev in enumerate(data["recent_events"], start=1):
+                r = 3 + idx
+                ws2.cell(row=r, column=1, value=idx).alignment = center_align
+
+                ts_str = "-"
+                if ev.get("timestamp"):
+                    try:
+                        dt_val = datetime.fromisoformat(ev["timestamp"])
+                        ts_str = dt_val.strftime("%d/%m/%Y %H:%M:%S")
+                    except Exception:
+                        ts_str = ev["timestamp"][:19].replace("T", " ")
+
+                res_str = "Đang gián đoạn..."
+                if ev.get("resolved_at"):
+                    try:
+                        dt_res = datetime.fromisoformat(ev["resolved_at"])
+                        res_str = dt_res.strftime("%d/%m/%Y %H:%M:%S")
+                    except Exception:
+                        res_str = ev["resolved_at"][:19].replace("T", " ")
+
+                ws2.cell(row=r, column=2, value=ts_str).alignment = center_align
+                ws2.cell(row=r, column=3, value=res_str).alignment = center_align
+                
+                dur = ev.get("duration_seconds")
+                dur_str = f"{round(dur/60, 1)} phút" if dur is not None else "Đang gián đoạn"
+                ws2.cell(row=r, column=4, value=dur_str).alignment = center_align
+                ws2.cell(row=r, column=5, value=ev.get("target_name", "")).alignment = left_align
+                ws2.cell(row=r, column=6, value=ev.get("note", "")).alignment = left_align
+
+                for c_idx in range(1, 7):
+                    ws2.cell(row=r, column=c_idx).border = thin_border
+                    ws2.cell(row=r, column=c_idx).font = normal_font
 
         for col in ws2.columns:
             max_len = max(len(str(cell.value or '')) for cell in col)
@@ -564,34 +574,75 @@ class ReportService:
         return output
 
     @staticmethod
-    async def get_data_retention_stats():
-        """Lấy thống kê số lượng sự cố theo từng tháng để người dùng quản lý chốt sổ/xóa."""
+    async def get_data_retention_stats(year: Optional[int] = None):
+        """Lấy thống kê số lượng sự cố theo từng tháng (bao gồm cả các tháng 0 sự cố) để người dùng tải báo cáo và quản lý chốt sổ."""
         db = get_db()
+        vn_now = get_vn_now()
+        current_year = vn_now.year
+
+        if year is not None:
+            years_to_process = [year]
+        else:
+            # Lấy tất cả các năm có trong db.events + năm hiện tại
+            pipeline_years = [
+                {"$match": {"timestamp": {"$ne": None}}},
+                {
+                    "$group": {
+                        "_id": {
+                            "$year": {"date": "$timestamp", "timezone": "+07:00"}
+                        }
+                    }
+                },
+                {"$sort": {"_id": -1}}
+            ]
+            try:
+                year_results = await db.events.aggregate(pipeline_years).to_list(50)
+                years_in_db = [r["_id"] for r in year_results if r.get("_id") is not None]
+            except Exception:
+                years_in_db = []
+
+            years_to_process = sorted(list(set(years_in_db + [current_year])), reverse=True)
+
+        # Thống kê số sự cố theo từng (năm, tháng)
         pipeline = [
+            {"$match": {"timestamp": {"$ne": None}}},
             {
                 "$group": {
                     "_id": {
-                        "year": {"$year": "$timestamp"},
-                        "month": {"$month": "$timestamp"}
+                        "year": {"$year": {"date": "$timestamp", "timezone": "+07:00"}},
+                        "month": {"$month": {"date": "$timestamp", "timezone": "+07:00"}}
                     },
                     "count": {"$sum": 1},
                     "resolved_count": {
                         "$sum": {"$cond": [{"$ne": ["$resolved_at", None]}, 1, 0]}
                     }
                 }
-            },
-            {"$sort": {"_id.year": -1, "_id.month": -1}}
-        ]
-        results = await db.events.aggregate(pipeline).to_list(100)
-        return [
-            {
-                "year": r["_id"]["year"],
-                "month": r["_id"]["month"],
-                "total_events": r["count"],
-                "resolved_events": r["resolved_count"]
             }
-            for r in results if r["_id"]["year"] is not None
         ]
+        try:
+            results = await db.events.aggregate(pipeline).to_list(500)
+            events_by_ym = {
+                (r["_id"]["year"], r["_id"]["month"]): r
+                for r in results
+                if r.get("_id") and r["_id"].get("year") is not None and r["_id"].get("month") is not None
+            }
+        except Exception:
+            events_by_ym = {}
+
+        retention_list = []
+        for y in years_to_process:
+            for m in range(12, 0, -1):
+                rec = events_by_ym.get((y, m))
+                total = rec["count"] if rec else 0
+                resolved = rec["resolved_count"] if rec else 0
+                retention_list.append({
+                    "year": y,
+                    "month": m,
+                    "total_events": total,
+                    "resolved_events": resolved
+                })
+
+        return retention_list
 
     @staticmethod
     async def delete_monthly_events(year: int, month: int):
