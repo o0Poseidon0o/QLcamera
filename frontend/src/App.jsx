@@ -32,7 +32,8 @@ import {
   User,
   Key,
   LogOut,
-  ShieldCheck
+  ShieldCheck,
+  HardDrive
 } from 'lucide-react';
 
 const API_BASE = '/api';
@@ -246,7 +247,8 @@ export default function App() {
     password: '',
     location: 'Nội bộ (LAN)',
     channel_count: 8,
-    is_mock: true
+    is_mock: true,
+    mock_storage_status: 'normal'
   });
   const [testResult, setTestResult] = useState(null);
   const [testingConnection, setTestingConnection] = useState(false);
@@ -460,7 +462,8 @@ export default function App() {
         password: device.password || '',
         location: device.location || 'Nội bộ (LAN)',
         channel_count: device.channel_count || 8,
-        is_mock: device.is_mock || false
+        is_mock: device.is_mock || false,
+        mock_storage_status: device.mock_storage_status || 'normal'
       });
     } else {
       setEditingDevice(null);
@@ -472,7 +475,8 @@ export default function App() {
         password: '',
         location: 'Nội bộ (LAN)',
         channel_count: 8,
-        is_mock: false
+        is_mock: false,
+        mock_storage_status: 'normal'
       });
     }
     setIsModalOpen(true);
@@ -491,7 +495,8 @@ export default function App() {
           port: Number(formData.port),
           username: formData.username,
           password: formData.password,
-          is_mock: formData.is_mock
+          is_mock: formData.is_mock,
+          mock_storage_status: formData.mock_storage_status || 'normal'
         })
       });
       const data = await res.json();
@@ -630,6 +635,26 @@ export default function App() {
     }
   };
 
+  // Kiểm tra tức thời ổ cứng đầu thu
+  const [checkingStorageId, setCheckingStorageId] = useState(null);
+  const handleCheckStorage = async (deviceId, devName) => {
+    try {
+      setCheckingStorageId(deviceId);
+      const res = await authFetch(`${API_BASE}/devices/${deviceId}/check-storage`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        alert(`[${devName}] ${data.message}`);
+        await fetchData();
+      } else {
+        alert(`Lỗi kiểm tra ổ cứng: ${data.detail || 'Không thể kiểm tra'}`);
+      }
+    } catch (err) {
+      alert(`Lỗi kết nối: ${err.message}`);
+    } finally {
+      setCheckingStorageId(null);
+    }
+  };
+
   // KPI calculations
   const onlineDevicesCount = devices.filter(d => d.status === 'online').length;
   const totalChannelsCount = channels.length;
@@ -639,6 +664,10 @@ export default function App() {
   const onlineChannelsCount = channels.filter(c => c.status === 'online').length;
   const vpnDevices = devices.filter(d => d.location && d.location.toLowerCase().includes('vpn'));
 
+  // Thống kê ổ cứng (Storage)
+  const errorStorageDevicesCount = devices.filter(d => d.storage && (d.storage.status === 'error' || d.storage.status === 'no_disk')).length;
+  const normalStorageDevicesCount = devices.filter(d => d.storage && d.storage.status === 'normal').length;
+
   // Filtering devices
   const filteredDevices = devices.filter(d => {
     if (locationFilter === 'lan') return !d.location || !d.location.toLowerCase().includes('vpn');
@@ -646,7 +675,8 @@ export default function App() {
     if (locationFilter === 'issues') {
       const hasDeviceLoss = d.status === 'offline';
       const hasChannelLoss = channels.some(c => c.device_id === d.id && c.status === 'video_loss');
-      return hasDeviceLoss || hasChannelLoss;
+      const hasStorageError = d.storage && (d.storage.status === 'error' || d.storage.status === 'no_disk');
+      return hasDeviceLoss || hasChannelLoss || hasStorageError;
     }
     return true;
   });
@@ -982,6 +1012,113 @@ export default function App() {
                       )}
                     </div>
                   </div>
+
+                  {/* Storage / Ổ Cứng Bar */}
+                  {dev.storage ? (
+                    <div style={{
+                      margin: '10px 16px 14px',
+                      padding: '10px 14px',
+                      background: dev.storage.status === 'error' 
+                        ? 'rgba(239, 68, 68, 0.08)' 
+                        : dev.storage.status === 'no_disk' 
+                        ? 'rgba(245, 158, 11, 0.08)' 
+                        : 'rgba(255, 255, 255, 0.025)',
+                      border: `1px solid ${
+                        dev.storage.status === 'error' 
+                          ? 'rgba(239, 68, 68, 0.3)' 
+                          : dev.storage.status === 'no_disk' 
+                          ? 'rgba(245, 158, 11, 0.3)' 
+                          : 'var(--border-subtle)'
+                      }`,
+                      borderRadius: 'var(--radius-md)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      flexWrap: 'wrap',
+                      gap: 12
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <div style={{
+                          width: 32,
+                          height: 32,
+                          borderRadius: 8,
+                          background: dev.storage.status === 'error' 
+                            ? 'rgba(239, 68, 68, 0.2)' 
+                            : dev.storage.status === 'no_disk' 
+                            ? 'rgba(245, 158, 11, 0.2)' 
+                            : 'rgba(56, 189, 248, 0.15)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: dev.storage.status === 'error' ? '#f87171' : dev.storage.status === 'no_disk' ? '#fbbf24' : '#38bdf8'
+                        }}>
+                          <HardDrive size={18} />
+                        </div>
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.86rem', fontWeight: 600 }}>
+                            <span style={{ color: '#ffffff' }}>Ổ Cứng (HDD):</span>
+                            {dev.storage.status === 'normal' && (
+                              <span style={{ color: '#34d399', display: 'flex', alignItems: 'center', gap: 4 }}>
+                                ✓ {dev.storage.total_disks} Ổ đĩa hoạt động tốt
+                              </span>
+                            )}
+                            {dev.storage.status === 'error' && (
+                              <span style={{ color: '#f87171', display: 'flex', alignItems: 'center', gap: 4 }}>
+                                ⚠️ Cảnh báo lỗi ổ đĩa / Bad Sector!
+                              </span>
+                            )}
+                            {dev.storage.status === 'no_disk' && (
+                              <span style={{ color: '#fbbf24', display: 'flex', alignItems: 'center', gap: 4 }}>
+                                ❌ Chưa gắn ổ cứng / Không nhận ổ
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: 2 }}>
+                            {dev.storage.status === 'normal' 
+                              ? `Đã dùng ${dev.storage.used_capacity_gb >= 1000 ? (dev.storage.used_capacity_gb / 1000).toFixed(1) + ' TB' : dev.storage.used_capacity_gb + ' GB'} / ${dev.storage.total_capacity_gb >= 1000 ? (dev.storage.total_capacity_gb / 1000).toFixed(1) + ' TB' : dev.storage.total_capacity_gb + ' GB'} (${dev.storage.percent_used}%) • Ghi đè tuần hoàn 24/7`
+                              : dev.storage.message}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 200, flex: 1, maxWidth: 320 }}>
+                        {dev.storage.total_capacity_gb > 0 && (
+                          <div style={{ flex: 1 }}>
+                            <div style={{ height: 6, background: 'rgba(255,255,255,0.1)', borderRadius: 3, overflow: 'hidden' }}>
+                              <div style={{
+                                width: `${Math.min(100, dev.storage.percent_used)}%`,
+                                height: '100%',
+                                background: dev.storage.status === 'error' 
+                                  ? '#ef4444' 
+                                  : dev.storage.percent_used > 90 
+                                  ? 'linear-gradient(90deg, #10b981, #f59e0b)' 
+                                  : '#10b981',
+                                borderRadius: 3,
+                                transition: 'width 0.5s ease'
+                              }} />
+                            </div>
+                          </div>
+                        )}
+                        {isLoggedIn && (
+                          <button 
+                            className="btn btn-secondary btn-sm"
+                            style={{ padding: '3px 8px', fontSize: '0.75rem' }}
+                            disabled={checkingStorageId === dev.id}
+                            onClick={() => handleCheckStorage(dev.id, dev.name)}
+                            title="Kiểm tra trực tiếp tình trạng ổ cứng từ đầu thu"
+                          >
+                            <RefreshCw size={11} className={checkingStorageId === dev.id ? 'spin' : ''} /> {checkingStorageId === dev.id ? 'Đang kiểm tra...' : 'Kiểm tra HDD'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    !isOffline && (
+                      <div style={{ margin: '6px 16px 10px', fontSize: '0.78rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <HardDrive size={13} /> Đang kiểm tra tình trạng ổ cứng...
+                      </div>
+                    )
+                  )}
 
                   {/* Channels Grid */}
                   <div className="channels-grid">
@@ -1913,6 +2050,24 @@ export default function App() {
                   </label>
                 </div>
 
+                {formData.is_mock && (
+                  <div className="form-group" style={{ marginTop: 10, background: 'rgba(245,158,11,0.06)', padding: '10px 14px', borderRadius: 8, border: '1px dashed #f59e0b' }}>
+                    <label style={{ color: '#f59e0b', fontSize: '0.82rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <HardDrive size={14} /> Giả lập trạng thái ổ cứng (Demo HDD Health):
+                    </label>
+                    <select 
+                      className="form-select"
+                      value={formData.mock_storage_status || 'normal'}
+                      onChange={(e) => setFormData({ ...formData, mock_storage_status: e.target.value })}
+                      style={{ marginTop: 6 }}
+                    >
+                      <option value="normal">✓ Ổ cứng bình thường (4TB, hoạt động tốt 24/7)</option>
+                      <option value="error">⚠️ Cảnh báo: Ổ cứng lỗi phân vùng / Bad Sector</option>
+                      <option value="no_disk">❌ Cảnh báo: Không phát hiện ổ cứng (No Disk)</option>
+                    </select>
+                  </div>
+                )}
+
                 {/* TEST CONNECTION BUTTON */}
                 <div style={{ marginTop: 8 }}>
                   <button 
@@ -1931,6 +2086,12 @@ export default function App() {
                       {testResult.details && (
                         <div style={{ marginTop: 4, fontSize: '0.78rem' }}>
                           Model: <strong>{testResult.details.model}</strong> | Serial: <strong>{testResult.details.serial}</strong>
+                        </div>
+                      )}
+                      {testResult.storage && (
+                        <div style={{ marginTop: 4, fontSize: '0.78rem', color: testResult.storage.status === 'normal' ? '#34d399' : '#f87171' }}>
+                          <HardDrive size={12} style={{ display: 'inline', marginRight: 4 }} />
+                          Ổ cứng: <strong>{testResult.storage.message}</strong>
                         </div>
                       )}
                     </div>

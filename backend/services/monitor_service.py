@@ -146,6 +146,68 @@ class MonitorService:
                 if new_nvr_status == "online":
                     update_fields["last_seen"] = now
 
+                    # 1.1 Kiểm tra tình trạng ổ cứng (Storage/HDD Health)
+                    try:
+                        storage_info = await DahuaService.get_storage_info(
+                            ip=ip, 
+                            port=port, 
+                            username=username, 
+                            password=password, 
+                            is_mock=is_mock,
+                            mock_storage_status=dev.get("mock_storage_status", "normal")
+                        )
+                        update_fields["storage"] = storage_info
+                        update_fields["storage_status"] = storage_info.get("status", "normal")
+
+                        # Cảnh báo nếu ổ cứng bị lỗi hoặc không có ổ
+                        prev_storage_status = dev.get("storage_status", "normal")
+                        curr_storage_status = storage_info.get("status", "normal")
+
+                        if curr_storage_status in ["error", "no_disk"]:
+                            open_storage_event = await db.events.find_one({
+                                "target_type": "device_storage",
+                                "target_id": str(dev_id),
+                                "resolved_at": None
+                            })
+                            if not open_storage_event:
+                                note = f"Cảnh báo ổ cứng {dev_name} ({ip}): {storage_info.get('message', 'Lỗi ổ đĩa')}"
+                                await db.events.insert_one({
+                                    "target_type": "device_storage",
+                                    "target_id": str(dev_id),
+                                    "target_name": f"{dev_name} (Ổ Cứng)",
+                                    "device_id": str(dev_id),
+                                    "device_name": dev_name,
+                                    "event": "storage_error" if curr_storage_status == "error" else "storage_no_disk",
+                                    "timestamp": now,
+                                    "resolved_at": None,
+                                    "duration_seconds": None,
+                                    "alert_sent": True,
+                                    "note": note
+                                })
+                                now_str = now.strftime("%H:%M:%S ngày %d/%m/%Y")
+                                html = EmailService.build_incident_html(dev_name, f"{dev_name} (Ổ Cứng)", "offline", now_str, note)
+                                asyncio.create_task(EmailService.send_alert(f"🚨 [CẢNH BÁO Ổ CỨNG] Đầu thu {dev_name} ({ip}) LỖI Ổ ĐĨA", html))
+                        elif curr_storage_status == "normal" and prev_storage_status in ["error", "no_disk"]:
+                            # Phục hồi ổ cứng
+                            open_storage_event = await db.events.find_one({
+                                "target_type": "device_storage",
+                                "target_id": str(dev_id),
+                                "resolved_at": None
+                            }, sort=[("timestamp", -1)])
+                            if open_storage_event:
+                                ev_time = to_aware_vn(open_storage_event.get("timestamp")) or now
+                                dur = max(0, int((now - ev_time).total_seconds()))
+                                await db.events.update_one(
+                                    {"_id": open_storage_event["_id"]},
+                                    {"$set": {"resolved_at": now, "duration_seconds": dur}}
+                                )
+                                now_str = now.strftime("%H:%M:%S ngày %d/%m/%Y")
+                                note = f"Ổ cứng đầu thu {dev_name} ({ip}) đã hoạt động bình thường trở lại."
+                                html = EmailService.build_incident_html(dev_name, f"{dev_name} (Ổ Cứng)", "online", now_str, note)
+                                asyncio.create_task(EmailService.send_alert(f"✅ [PHỤC HỒI Ổ CỨNG] Đầu thu {dev_name} ({ip}) Ổ ĐĨA BÌNH THƯỜNG", html))
+                    except Exception as err:
+                        logger.warning(f"Error checking storage for {dev_name}: {err}")
+
                 await db.devices.update_one({"_id": dev_id}, {"$set": update_fields})
 
                 # 2. Xử lý các kênh camera con

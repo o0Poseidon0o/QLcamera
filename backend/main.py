@@ -70,6 +70,7 @@ class DeviceCreate(BaseModel):
     location: str = Field("Nội bộ (LAN)", example="Nội bộ (LAN) hoặc VPN Tỉnh")
     channel_count: int = Field(8, example=8)
     is_mock: bool = Field(False, description="Bật chế độ mô phỏng để test khi chưa có IP thật")
+    mock_storage_status: Optional[str] = Field("normal", description="Trạng thái ổ cứng mô phỏng: normal, error, no_disk")
 
 class DeviceUpdate(BaseModel):
     name: Optional[str] = None
@@ -80,6 +81,7 @@ class DeviceUpdate(BaseModel):
     location: Optional[str] = None
     channel_count: Optional[int] = None
     is_mock: Optional[bool] = None
+    mock_storage_status: Optional[str] = None
 
 class TestConnectionRequest(BaseModel):
     ip: str
@@ -87,6 +89,7 @@ class TestConnectionRequest(BaseModel):
     username: str = "admin"
     password: str = ""
     is_mock: bool = False
+    mock_storage_status: Optional[str] = "normal"
 
 class ChannelUpdate(BaseModel):
     name: Optional[str] = None
@@ -119,6 +122,7 @@ async def lifespan(app: FastAPI):
                 "channel_count": 8,
                 "status": "online",
                 "is_mock": True,
+                "mock_storage_status": "normal",
                 "mock_loss_channels": [],
                 "last_seen": datetime.now(timezone.utc),
                 "created_at": datetime.now(timezone.utc)
@@ -133,6 +137,7 @@ async def lifespan(app: FastAPI):
                 "channel_count": 8,
                 "status": "online",
                 "is_mock": True,
+                "mock_storage_status": "normal",
                 "mock_loss_channels": [3], # Giả lập camera 3 mất tín hiệu
                 "last_seen": datetime.now(timezone.utc),
                 "created_at": datetime.now(timezone.utc)
@@ -147,6 +152,7 @@ async def lifespan(app: FastAPI):
                 "channel_count": 8,
                 "status": "online",
                 "is_mock": True,
+                "mock_storage_status": "normal",
                 "mock_loss_channels": [],
                 "last_seen": datetime.now(timezone.utc),
                 "created_at": datetime.now(timezone.utc)
@@ -161,6 +167,7 @@ async def lifespan(app: FastAPI):
                 "channel_count": 16,
                 "status": "online",
                 "is_mock": True,
+                "mock_storage_status": "normal",
                 "mock_loss_channels": [5, 12], # Giả lập camera 5 và 12 mất tín hiệu
                 "last_seen": datetime.now(timezone.utc),
                 "created_at": datetime.now(timezone.utc)
@@ -329,7 +336,50 @@ async def test_dahua_connection(payload: TestConnectionRequest, current_admin: d
         password=payload.password,
         is_mock=payload.is_mock
     )
+    # Kèm thêm thông tin ổ cứng khi kiểm tra kết nối
+    try:
+        storage = await DahuaService.get_storage_info(
+            ip=payload.ip,
+            port=payload.port,
+            username=payload.username,
+            password=payload.password,
+            is_mock=payload.is_mock,
+            mock_storage_status=payload.mock_storage_status or "normal"
+        )
+        result["storage"] = storage
+    except Exception as e:
+        logger.warning(f"Error getting storage info during test-connect: {e}")
     return result
+
+@app.post("/api/devices/{device_id}/check-storage")
+async def check_device_storage(device_id: str, current_admin: dict = Depends(get_current_admin)):
+    """Kiểm tra tức thời tình trạng ổ cứng (HDD) của một đầu thu Dahua."""
+    db = get_db()
+    dev_obj_id = ObjectId(device_id) if ObjectId.is_valid(device_id) else None
+    query = {"_id": dev_obj_id} if dev_obj_id else {"id": device_id}
+    dev = await db.devices.find_one(query)
+    if not dev:
+        raise HTTPException(status_code=404, detail="Không tìm thấy đầu thu")
+
+    storage_info = await DahuaService.get_storage_info(
+        ip=dev.get("ip", "127.0.0.1"),
+        port=dev.get("port", 80),
+        username=dev.get("username", "admin"),
+        password=dev.get("password", ""),
+        is_mock=dev.get("is_mock", False),
+        mock_storage_status=dev.get("mock_storage_status", "normal")
+    )
+
+    await db.devices.update_one(
+        {"_id": dev["_id"]},
+        {"$set": {"storage": storage_info, "storage_status": storage_info.get("status", "normal")}}
+    )
+
+    return {
+        "success": True,
+        "message": f"Đã kiểm tra ổ cứng đầu thu {dev.get('name')}: {storage_info.get('message')}",
+        "storage": storage_info
+    }
 
 # 2. Channel Endpoints
 @app.get("/api/channels")
