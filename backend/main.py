@@ -679,13 +679,13 @@ async def export_haiquan_excel(
     )
 
 @app.get("/api/data/retention-stats")
-async def get_retention_stats(year: Optional[int] = Query(None, ge=2020, le=2050)):
+async def get_retention_stats(year: Optional[int] = Query(None, ge=2020, le=2100)):
     """Lấy danh sách các tháng và thống kê sự cố (kể cả tháng 0 sự cố) để người dùng quản lý chốt sổ và tải báo cáo."""
     return await ReportService.get_data_retention_stats(year)
 
 @app.delete("/api/data/cleanup-month")
 async def cleanup_month_data(
-    year: int = Query(..., ge=2020, le=2050),
+    year: int = Query(..., ge=2020, le=2100),
     month: int = Query(..., ge=1, le=12),
     current_admin: dict = Depends(get_current_admin)
 ):
@@ -694,7 +694,7 @@ async def cleanup_month_data(
 
 @app.delete("/api/data/cleanup-year")
 async def cleanup_year_data(
-    year: int = Query(..., ge=2020, le=2050),
+    year: int = Query(..., ge=2020, le=2100),
     current_admin: dict = Depends(get_current_admin)
 ):
     """Xóa toàn bộ dữ liệu sự cố của cả năm."""

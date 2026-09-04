@@ -601,7 +601,7 @@ class ReportService:
             except Exception:
                 years_in_db = []
 
-            years_to_process = sorted(list(set(years_in_db + [current_year])), reverse=True)
+            years_to_process = sorted(list(set(years_in_db + [current_year, current_year - 1])), reverse=True)
 
         # Thống kê số sự cố theo từng (năm, tháng)
         pipeline = [

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Camera, 
   Server, 
@@ -572,6 +572,22 @@ export default function App() {
   const [retentionStats, setRetentionStats] = useState([]);
   const [cleaningStatus, setCleaningStatus] = useState(null);
 
+  // Tự động sinh danh sách các năm linh hoạt (không bị cố định/hardcode)
+  const currentSystemYear = new Date().getFullYear();
+  const availableYears = useMemo(() => {
+    const years = new Set();
+    // Dải năm mặc định: từ 3 năm trước đến 3 năm sau so với năm hiện tại
+    for (let y = currentSystemYear - 3; y <= currentSystemYear + 3; y++) {
+      years.add(y);
+    }
+    // Bổ sung các năm lịch sử đã có dữ liệu trong DB
+    retentionStats.forEach(item => {
+      if (item.year) years.add(item.year);
+    });
+    if (reportYear) years.add(reportYear);
+    return Array.from(years).sort((a, b) => b - a);
+  }, [currentSystemYear, reportYear, retentionStats]);
+
   const fetchRetentionStats = async (year = reportYear) => {
     try {
       const url = year ? `${API_BASE}/data/retention-stats?year=${year}` : `${API_BASE}/data/retention-stats`;
@@ -1080,9 +1096,9 @@ export default function App() {
                   value={reportYear} 
                   onChange={(e) => setReportYear(Number(e.target.value))}
                 >
-                  <option value={2025}>2025</option>
-                  <option value={2026}>2026</option>
-                  <option value={2027}>2027</option>
+                  {availableYears.map(y => (
+                    <option key={y} value={y}>Năm {y}</option>
+                  ))}
                 </select>
               </div>
 
@@ -1243,7 +1259,20 @@ export default function App() {
                       Mọi tháng trong năm (kể cả tháng không có sự cố, hoạt động 100%) đều có sẵn <strong>File Excel Báo Cáo Hải Quan & SLA</strong> để tải về máy. Với các tháng có sự cố, Quản trị viên có thể bấm <strong>"Xóa Dữ Liệu Sự Cố"</strong> sau khi tải file để giải phóng bộ nhớ MongoDB Atlas.
                     </p>
                   </div>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>Năm:</span>
+                      <select 
+                        className="form-select" 
+                        value={reportYear} 
+                        onChange={(e) => setReportYear(Number(e.target.value))}
+                        style={{ padding: '4px 10px', fontSize: '0.82rem', height: '32px' }}
+                      >
+                        {availableYears.map(y => (
+                          <option key={y} value={y}>Năm {y}</option>
+                        ))}
+                      </select>
+                    </div>
                     <button className="btn btn-secondary btn-sm" onClick={() => fetchRetentionStats(reportYear)}>
                       <RefreshCw size={13} /> Làm Mới
                     </button>
